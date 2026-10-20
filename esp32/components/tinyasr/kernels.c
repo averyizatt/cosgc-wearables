@@ -1,7 +1,8 @@
 #include "kernels.h"
 #include <math.h>
 #include <string.h>
-#if defined(CONFIG_TASR_EXP_DOT_DUP)
+#include "tinyasr.h"
+#if defined(ESP_PLATFORM)
 #include "esp_cpu.h"
 #endif
 #if defined(CONFIG_TASR_EXP_DOT_IRAM)
@@ -259,6 +260,66 @@ void tasr_quant_rows_mx(const float *x, int T, int K, int ldx, int8_t *xq, int l
 }
 
 int tasr_xr_max_kp = 256;
+int tasr_xt_enable = 1;
+
+// ---- broadcast int8 kernel for short rows: tasr_gemm_blk16 with the roles swapped. The 16 QACC lanes hold 16
+// activation rows (transposed tile xT[k][16]), and each weight byte is broadcast: one instruction per 16 MACs, against
+// the x-stationary kernel's ~2. The lanes are 20 bits wide, so a group is only run this way when Cauchy-Schwarz proves
+// that no partial sum can leave [-2^19, 2^19): max |x_t|^2 * max |w_j|^2 < (2^19 - 1)^2. Then every sum is exact and
+// identical to the x-stationary kernel's; groups that fail the test (about 1-11 %) use that kernel instead.
+#define XT_LIM (524287ull * 524287ull)
+const uint16_t *tasr_qlin_norms(const tasr_qlin_t *L)
+{
+    if (L->bits != 8 || L->blocked || L->kp > 256) return NULL;
+    uint16_t *q = (uint16_t *)tasr_alloc(sizeof(uint16_t) * L->n, 0);
+    if (!q) return NULL;
+    for (int j = 0; j < L->n; j++) {
+        const int8_t *w = L->w + (size_t)j * L->kp;
+        uint32_t s = 0;
+        for (int k = 0; k < L->kp; k++) s += (uint32_t)(w[k] * w[k]);
+        q[j] = (uint16_t)((s + 127) / 128);  // rounded up (the bound stays safe); <= 256 * 128^2 / 128 = 32768
+    }
+    return q;
+}
+// x rows [0, tn) -> 16-row groups xt[g * kp + k * 16 + r] = x[g + r][k] (rows past tn zero); xn[t] = |x_t|^2
+static void build_xt(const int8_t *x, int ldq, int tn, int kp, int8_t *xt, int32_t *xn)
+{
+    for (int g = 0; g < tn; g += 16) {
+        int8_t *o = xt + (size_t)g * kp;
+        for (int r = 0; r < 16; r++) {
+            if (g + r >= tn) {
+                for (int k = 0; k < kp; k++) o[k * 16 + r] = 0;
+                continue;
+            }
+            const int8_t *xr = x + (size_t)(g + r) * ldq;
+            int32_t s = 0;
+            for (int k = 0; k < kp; k++) {
+                const int v = xr[k];
+                o[k * 16 + r] = (int8_t)v;
+                s += v * v;
+            }
+            xn[g + r] = s;
+        }
+    }
+}
+// transposed-activation scratch (64 rows x kp <= 256), one per core / thread, allocated on first use (internal RAM)
+#define XT_BYTES (64 * 256 + 64)  // + tasr_gemm_blk16 read-ahead
+#if defined(ESP_PLATFORM)
+static int8_t *s_xt[2];
+static int8_t *xt_scratch(void)
+{
+    const int c = esp_cpu_get_core_id();
+    if (!s_xt[c]) s_xt[c] = (int8_t *)tasr_alloc(XT_BYTES, 1);
+    return s_xt[c];
+}
+#else
+static _Thread_local int8_t *s_xt;
+static int8_t *xt_scratch(void)
+{
+    if (!s_xt) s_xt = (int8_t *)tasr_alloc(XT_BYTES, 1);
+    return s_xt;
+}
+#endif
 
 // SiLU sigmoid, the same table lookup as the engines' nsig()
 static inline float ep_sig(float x, const float *tab, const float *slope)
@@ -269,9 +330,9 @@ static inline float ep_sig(float x, const float *tab, const float *slope)
     const int i = (int)u;
     return tab[i] + (u - (float)i) * slope[i];
 }
-// output stage of one tile: y[t*ldy + j] = acc[t*lda + j] * xs[t] * sw[j] + bb[j] for t < tn, j < nb; then optionally
-// SiLU (sg != NULL) and the running row max |y| (rm != NULL). Without either it is the plain loop.
-static inline __attribute__((always_inline)) void qout(const int32_t *acc, int lda, int tn, int nb, const float *xs,
+// output stage of one tile: y[t*ldy + j] = acc[t*lda + j*ldc] * xs[t] * sw[j] + bb[j] for t < tn, j < nb; then
+// optionally SiLU (sg != NULL) and the running row max |y| (rm != NULL). Without either it is the plain loop.
+static inline __attribute__((always_inline)) void qout(const int32_t *acc, int lda, int ldc, int tn, int nb, const float *xs,
                                                        const float *sw, const float *bb, float *y, int ldy,
                                                        const float *sg, const float *ss, float *rm)
 {
@@ -280,7 +341,7 @@ static inline __attribute__((always_inline)) void qout(const int32_t *acc, int l
             float *yo = y + (size_t)t * ldy;
             const int32_t *a = acc + (size_t)t * lda;
             const float xst = xs[t];
-            for (int j = 0; j < nb; j++) yo[j] = (float)a[j] * xst * sw[j] + bb[j];
+            for (int j = 0; j < nb; j++) yo[j] = (float)a[j * ldc] * xst * sw[j] + bb[j];
         }
         return;
     }
@@ -290,7 +351,7 @@ static inline __attribute__((always_inline)) void qout(const int32_t *acc, int l
         const float xst = xs[t];
         float m = rm ? rm[t] : 0.f;
         for (int j = 0; j < nb; j++) {
-            float v = (float)a[j] * xst * sw[j] + bb[j];
+            float v = (float)a[j * ldc] * xst * sw[j] + bb[j];
             if (sg) v = v * ep_sig(v, sg, ss);
             yo[j] = v;
             const float av = fabsf(v);
@@ -319,19 +380,50 @@ static inline __attribute__((always_inline)) void qlin_body(const tasr_qlin_t *L
                     tasr_gemm_blk16(wtmp + (size_t)ks * 16, kn, x0 + ks, ldq, tn, part);
                     for (int i = 0; i < tn * 16; i++) acc[i] += part[i];
                 }
-                qout(acc, 16, tn, 16, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb, ldy, sg, ss, rm ? rm + t0 : NULL);
+                qout(acc, 16, 1, tn, 16, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
     }
-    if (L->bits == 8 && kp <= tasr_xr_max_kp) {  // x-stationary kernel (short rows), 16 outputs x 64 rows per tile
+    if (L->bits == 8 && kp <= tasr_xr_max_kp) {
+        int8_t *xt = tasr_xt_enable && L->wn2 && kp <= 256 && T >= 8 ? xt_scratch() : NULL;
+        if (xt) {  // broadcast kernel on 16-row groups where the bound allows, the x-stationary kernel elsewhere
+            int32_t xn[64];
+            for (int t0 = 0; t0 < T; t0 += 64) {
+                const int tn = T - t0 < 64 ? T - t0 : 64;
+                const int8_t *x0 = xq + (size_t)t0 * ldq;
+                build_xt(x0, ldq, tn, kp, xt, xn);
+                for (int nb0 = n0; nb0 < n1; nb0 += 16) {  // the block's 16 weight rows stay in cache over the groups
+                    const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
+                    const float *sw = L->s + nb0, *bb = L->b + nb0;
+                    const int8_t *wb = L->w + (size_t)nb0 * kp;
+                    uint32_t wm = 0;
+                    for (int j = 0; j < nb; j++) wm = L->wn2[nb0 + j] > wm ? L->wn2[nb0 + j] : wm;
+                    for (int g = 0; g < tn; g += 16) {
+                        const int rn = tn - g < 16 ? tn - g : 16;
+                        uint32_t xm = 0;
+                        for (int r = 0; r < rn; r++) xm = (uint32_t)xn[g + r] > xm ? (uint32_t)xn[g + r] : xm;
+                        float *yo = y + (size_t)(t0 + g) * ldy + nb0, *rmg = rm ? rm + t0 + g : NULL;
+                        if (rn >= 8 && (uint64_t)xm * wm * 128u < XT_LIM) {
+                            tasr_gemm_blk16(xt + (size_t)g * kp, kp, wb, kp, nb, acc);  // acc[j * 16 + r]
+                            qout(acc, 1, 16, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
+                        } else {
+                            tasr_gemm_s8_xr(wb, kp, nb, x0 + (size_t)g * ldq, ldq, rn, acc);  // acc[r * nb + j]
+                            qout(acc, nb, 1, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // x-stationary kernel (short rows), 16 outputs x 64 rows per tile
         for (int nb0 = n0; nb0 < n1; nb0 += 16) {
             const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
             const float *sw = L->s + nb0, *bb = L->b + nb0;
             for (int t0 = 0; t0 < T; t0 += 64) {
                 const int tn = T - t0 < 64 ? T - t0 : 64;
                 tasr_gemm_s8_xr(L->w + (size_t)nb0 * kp, kp, nb, xq + (size_t)t0 * ldq, ldq, tn, acc);
-                qout(acc, nb, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
+                qout(acc, nb, 1, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
@@ -362,7 +454,7 @@ static inline __attribute__((always_inline)) void qlin_body(const tasr_qlin_t *L
                         for (int t = 0; t < tn; t++) acc[t * nb + j] += part[t];
                     }
                 }
-                qout(acc, nb, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
+                qout(acc, nb, 1, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
@@ -457,26 +549,31 @@ __attribute__((noinline, optimize("no-branch-count-reg"))) void tasr_gemm_blk16(
         const int8_t *pw = tile;
         __asm__ volatile("ee.zero.qacc\n" ::: "memory");
         int n = nkb;
+        // tile rows rotate through q0..q3, each loaded three instructions before its use: a load used by the very
+        // next instruction stalls (measured on the board: 2.0 cycles per instruction with two registers, 1.15 with
+        // the load two ahead). The last step loads three rows past the tile (callers pad tiles by 64 bytes).
         __asm__ volatile(
-            "ee.vld.128.ip q0, %1, 16\n"            // first weight row
+            "ee.vld.128.ip q0, %1, 16\n"
+            "ee.vld.128.ip q1, %1, 16\n"
+            "ee.vld.128.ip q2, %1, 16\n"
             "loopnez %2, 1f\n"
             "  ee.vld.128.ip q7, %0, 16\n"          // 16 activations
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 0\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 0\n"
             "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 1\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 2\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 3\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 4\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 2\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 3\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 4\n"
             "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 5\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 6\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 7\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 8\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 6\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 7\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 8\n"
             "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 9\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 10\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 11\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 12\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 10\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 11\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 12\n"
             "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 13\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q0, q7, 14\n"
-            "  ee.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 15\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 14\n"
+            "  ee.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 15\n"
             "1:\n"
             : "+r"(px), "+r"(pw), "+r"(n) : : "memory");
         qacc_extract16(out + (size_t)t * 16);

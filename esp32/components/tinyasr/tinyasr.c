@@ -914,7 +914,7 @@ tasr_stream_t *tasr_stream_create(const tasr_model_t *m, int chunk, int left_chu
     const int capmax = (left_chunks + 1) * chunk;
     const int cappmax = (capmax + 15) & ~15;
     const int accn = cappmax > TMAX ? cappmax : TMAX;
-    int tile = 16 * s->ldq + 16;
+    int tile = 16 * s->ldq + 64;  // int4 unpack tile (+64: tasr_gemm_blk16 reads ahead)
     if (s->kp_fe > tile) tile = s->kp_fe;
     for (int w = 0; w < NW; w++) {
         s->wk[w].wtmp = (int8_t *)tasr_alloc(tile, 1);

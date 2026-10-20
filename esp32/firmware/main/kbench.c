@@ -18,8 +18,66 @@ static uint32_t fnv(const float *x, size_t n)
     return h;
 }
 
+// PIE pipeline timings: cycles per instruction of short unrolled sequences (operands in registers / internal RAM)
+static uint8_t pbuf[512] __attribute__((aligned(16)));
+#define PIE_N 1000
+#define PIE_T(name, ninstr, body)                                                                                   \
+    do {                                                                                                            \
+        int n = PIE_N, r;                                                                                           \
+        uint8_t *p = pbuf;                                                                                          \
+        const uint32_t c0 = esp_cpu_get_cycle_count();                                                              \
+        __asm__ volatile("loopnez %[n], 1f\n" body "1:\n" : [n] "+r"(n), [p] "+r"(p), [r] "=&r"(r) : : "memory"); \
+        const uint32_t dc = esp_cpu_get_cycle_count() - c0;                                                         \
+        (void)r;                                                                                                    \
+        printf("PIE %-46s %.2f cycles/instr\n", name, (double)dc / (PIE_N * (ninstr)));                             \
+    } while (0)
+static void pie_bench(void)
+{
+    __asm__ volatile("ee.vld.128.ip q0, %0, 0\n ee.vld.128.ip q1, %0, 0\n ee.vld.128.ip q2, %0, 0\n ee.vld.128.ip q3, %0, 0\n"
+                     ::"r"(pbuf) : "memory");
+    PIE_T("vmulas.accx chain", 8, ".rept 8\n ee.vmulas.s8.accx q0, q1\n .endr\n");
+    PIE_T("vmulas.accx.ld (load unused) chain", 8, ".rept 8\n ee.vmulas.s8.accx.ld.ip q2, %[p], 0, q0, q1\n .endr\n");
+    PIE_T("vld + vmulas.accx (independent)", 8, ".rept 4\n ee.vld.128.ip q2, %[p], 0\n ee.vmulas.s8.accx q0, q1\n .endr\n");
+    PIE_T("vld q0 + vmulas.accx q0 (load-use)", 8, ".rept 4\n ee.vld.128.ip q0, %[p], 0\n ee.vmulas.s8.accx q0, q1\n .endr\n");
+    PIE_T("vmulas.accx + rur.accx_0", 8, ".rept 4\n ee.vmulas.s8.accx q0, q1\n rur.accx_0 %[r]\n .endr\n");
+    PIE_T("zero.accx + vmulas.accx", 8, ".rept 4\n ee.zero.accx\n ee.vmulas.s8.accx q0, q1\n .endr\n");
+    PIE_T("vmulas.qacc chain", 8, ".rept 8\n ee.vmulas.s8.qacc q0, q1\n .endr\n");
+    PIE_T("vmulas.accx / vmulas.qacc alternating", 8, ".rept 4\n ee.vmulas.s8.accx q0, q1\n ee.vmulas.s8.qacc q2, q3\n .endr\n");
+    PIE_T("vsmulas.qacc chain", 8, ".rept 8\n ee.vsmulas.s8.qacc q0, q1, 0\n .endr\n");
+    PIE_T("row kernel body (vld, vmulas.ld x2)", 8,
+          ".rept 2\n ee.vld.128.ip q2, %[p], 0\n ee.vmulas.s8.accx.ld.ip q3, %[p], 0, q0, q1\n"
+          " ee.vld.128.ip q0, %[p], 0\n ee.vmulas.s8.accx.ld.ip q1, %[p], 0, q2, q3\n .endr\n");
+    PIE_T("l32i + dependent add", 8, ".rept 4\n l32i %[r], %[p], 0\n add %[r], %[r], %[r]\n .endr\n");
+    PIE_T("nop (loop overhead reference)", 8, ".rept 8\n nop\n .endr\n");
+    PIE_T("blk16 body: vld + 16 vsmulas.ld.incp (q0/q1)", 18,
+          " ee.vld.128.ip q7, %[p], 0\n ee.vld.128.ip q0, %[p], 16\n"
+          " .rept 8\n ee.vsmulas.s8.qacc.ld.incp q1, %[p], q0, q7, 0\n ee.vsmulas.s8.qacc.ld.incp q0, %[p], q1, q7, 1\n .endr\n"
+          " addi %[p], %[p], -144\n");
+    PIE_T("same with q0/q1/q2 rotation (load 2 ahead)", 18,
+          " ee.vld.128.ip q7, %[p], 0\n ee.vld.128.ip q0, %[p], 16\n ee.vld.128.ip q1, %[p], 16\n"
+          " .rept 5\n ee.vsmulas.s8.qacc.ld.incp q2, %[p], q0, q7, 0\n ee.vsmulas.s8.qacc.ld.incp q0, %[p], q1, q7, 1\n"
+          " ee.vsmulas.s8.qacc.ld.incp q1, %[p], q2, q7, 2\n .endr\n addi %[p], %[p], -272\n");
+    PIE_T("st.qacc_l/h stores (x4) after vsmulas", 5,
+          " ee.vsmulas.s8.qacc q0, q7, 0\n ee.st.qacc_l.l.128.ip %[p], 16\n ee.st.qacc_l.h.32.ip %[p], 16\n"
+          " ee.st.qacc_h.l.128.ip %[p], 16\n ee.st.qacc_h.h.32.ip %[p], -48\n");
+    {   // the whole broadcast kernel per weight row: kp = 16 (1 step) and 176 (11 steps), 16 weight rows
+        static int8_t tile[176 * 16 + 64] __attribute__((aligned(16))), wr[16 * 176] __attribute__((aligned(16)));
+        static int32_t out[16 * 16];
+        uint32_t c[2];
+        for (int v = 0; v < 2; v++) {
+            const int kp = v ? 176 : 16;
+            const uint32_t c0 = esp_cpu_get_cycle_count();
+            for (int rep = 0; rep < 100; rep++) tasr_gemm_blk16(tile, kp, wr, kp, 16, out);
+            c[v] = esp_cpu_get_cycle_count() - c0;
+        }
+        printf("PIE blk16 per weight row: kp 16: %.1f cycles, kp 176: %.1f cycles (%.1f per 16-k step, %.1f fixed)\n",
+               c[0] / 1600.0, c[1] / 1600.0, (c[1] - c[0]) / 1600.0 / 10, c[0] / 1600.0 - (c[1] - c[0]) / 1600.0 / 10);
+    }
+}
+
 void run_kernel_bench(const uint8_t *flash, size_t flash_bytes)
 {
+    pie_bench();
     static const struct { int n, k; const char *name; } shp[] = {{176, 704, "K=704 x 176 (ff*_2)"}, {704, 176, "K=176 x 704 (ff*_1)"}};
     const int T = 64;
     printf("KBENCH int8 GEMM, %d rows, min of 3 runs at 240 MHz\n", T);
@@ -68,6 +126,77 @@ void run_kernel_bench(const uint8_t *flash, size_t flash_bytes)
         tasr_xr_max_kp = 256;
         heap_caps_free(wi); heap_caps_free(wp); heap_caps_free(xi); heap_caps_free(xp); heap_caps_free(xs);
         heap_caps_free(sw); heap_caps_free(bb); heap_caps_free(acc); heap_caps_free(y);
+    }
+    {   // broadcast kernel (tasr_xt_enable) against the x-stationary one on K=176, with model-like int8 values (bell
+        // shaped, |w|, |x| mostly < 64) so that the overflow bound passes as it does on real activations
+        const int n = 704, k = 176;
+        const size_t wb = (size_t)n * k, macs = wb * T;
+        int8_t *w[2] = {heap_caps_aligned_alloc(16, wb, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                        heap_caps_aligned_alloc(16, wb, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)};
+        int8_t *x = heap_caps_aligned_alloc(16, (size_t)T * k, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        float *xs = heap_caps_malloc(sizeof(float) * T, MALLOC_CAP_INTERNAL), *sw = heap_caps_malloc(sizeof(float) * n, MALLOC_CAP_INTERNAL);
+        float *bb = heap_caps_malloc(sizeof(float) * n, MALLOC_CAP_INTERNAL);
+        int32_t *acc = heap_caps_aligned_alloc(16, sizeof(int32_t) * 64 * 16, MALLOC_CAP_INTERNAL);
+        float *y = heap_caps_aligned_alloc(16, sizeof(float) * T * n, MALLOC_CAP_SPIRAM);
+        if (!w[1] || !x || !xs || !sw || !bb || !acc || !y) { printf("KBENCH allocation failed\n"); return; }
+        uint32_t r = 777;
+        for (size_t i = 0; i < wb; i++) {
+            int s = 0;
+            for (int q = 0; q < 4; q++) { r = r * 1103515245u + 12345u; s += (int)(r >> 24) - 128; }
+            w[1][i] = (int8_t)(s / 8);
+        }
+        if (w[0]) memcpy(w[0], w[1], wb);
+        for (int i = 0; i < T * k; i++) {
+            int s = 0;
+            for (int q = 0; q < 4; q++) { r = r * 1103515245u + 12345u; s += (int)(r >> 24) - 128; }
+            x[i] = (int8_t)(s / 8);
+        }
+        for (int t = 0; t < T; t++) xs[t] = 1e-3f;
+        for (int j = 0; j < n; j++) { sw[j] = 1e-2f; bb[j] = 0.f; }
+        static const char *wn[2] = {"internal", "PSRAM"};
+        for (int pl = 0; pl < 2; pl++) {
+            if (!w[pl]) continue;
+            tasr_qlin_t L = {.n = n, .k = k, .kp = k, .bits = 8, .blocked = 0, .w = w[pl], .s = sw, .b = bb};
+            L.wn2 = tasr_qlin_norms(&L);
+            for (int e = 0; e < 2; e++) {
+                tasr_xt_enable = e;
+                uint32_t best = UINT32_MAX;
+                for (int rep = 0; rep < 3; rep++) {
+                    const uint32_t c0 = esp_cpu_get_cycle_count();
+                    tasr_qlin_range(&L, x, xs, T, k, y, n, NULL, acc, 0, n);
+                    const uint32_t dc = esp_cpu_get_cycle_count() - c0;
+                    if (dc < best) best = dc;
+                }
+                printf("KBENCH K=176 x 704 model-like | %-9s kernel | weights %-8s | %8u cycles | %.3f cycles/MAC | y %08x\n",
+                       e ? "broadcast" : "x-stat", wn[pl], (unsigned)best, (double)best / macs, (unsigned)fnv(y, (size_t)T * n));
+            }
+            tasr_xt_enable = 1;
+            heap_caps_free((void *)L.wn2);
+        }
+        // where the outputs go: 176 outputs (45 KB of y) into PSRAM (as the engine's h2) or internal RAM
+        float *yi = heap_caps_aligned_alloc(16, sizeof(float) * T * 176, MALLOC_CAP_INTERNAL);
+        if (yi && w[0]) {
+            tasr_qlin_t L = {.n = 176, .k = k, .kp = k, .bits = 8, .blocked = 0, .w = w[0], .s = sw, .b = bb};
+            L.wn2 = tasr_qlin_norms(&L);
+            for (int yl = 0; yl < 2; yl++)
+                for (int e = 0; e < 2; e++) {
+                    tasr_xt_enable = e;
+                    uint32_t best = UINT32_MAX;
+                    for (int rep = 0; rep < 3; rep++) {
+                        const uint32_t c0 = esp_cpu_get_cycle_count();
+                        tasr_qlin_range(&L, x, xs, T, k, yl ? yi : y, 176, NULL, acc, 0, 176);
+                        const uint32_t dc = esp_cpu_get_cycle_count() - c0;
+                        if (dc < best) best = dc;
+                    }
+                    printf("KBENCH K=176 x 176 model-like | %-9s kernel | weights internal y %-8s | %8u cycles | %.3f cycles/MAC\n",
+                           e ? "broadcast" : "x-stat", yl ? "internal" : "PSRAM", (unsigned)best, (double)best / ((double)T * 176 * k));
+                }
+            tasr_xt_enable = 1;
+            heap_caps_free((void *)L.wn2);
+        }
+        heap_caps_free(yi);
+        heap_caps_free(w[0]); heap_caps_free(w[1]); heap_caps_free(x); heap_caps_free(xs); heap_caps_free(sw);
+        heap_caps_free(bb); heap_caps_free(acc); heap_caps_free(y);
     }
     printf("KBENCH same y hash on every line of a shape = same results; cycles/MAC near the internal line = not memory-bound\n");
 }

@@ -106,6 +106,7 @@ static tasr_qlin_t nload_qlin(ncur_t *c, int n, int k, int bits, size_t *acc)
     *acc += wb;
     L.s = nf32(c, n, acc);
     L.b = nf32(c, n, acc);
+    if (!c->err) L.wn2 = tasr_qlin_norms(&L);  // int8 rows <= 256: enables the broadcast kernel
     return L;
 }
 static nln_t nln(ncur_t *c, int d, size_t *acc)
@@ -946,7 +947,7 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     C.xs = (float *)tasr_alloc(sizeof(float) * RB, 1);
     int8_t *xq_sub = (int8_t *)tasr_alloc((size_t)RB * m->sub.kp, 0);   // front-end projection rows (K = 3520)
     for (int w = 0; w < NWA; w++) {
-        if (m->bits == 4) C.wtmp[w] = (int8_t *)tasr_alloc(16 * C.ldq + 16, 1);  // int4 unpack tile (int8 layers need none)
+        if (m->bits == 4) C.wtmp[w] = (int8_t *)tasr_alloc(16 * C.ldq + 64, 1);  // int4 unpack tile (+64: blk16 reads ahead)
         C.acc[w] = (int32_t *)tasr_alloc(sizeof(int32_t) * 64 * 16, 1);
         C.rmw[w] = (float *)tasr_alloc(sizeof(float) * RB, 1);
     }
@@ -1754,7 +1755,7 @@ tasr_nemo_stream_t *tasr_nemo_stream_new(const tasr_nemo_t *m, int chunk, int le
     s->W.xq = (int8_t *)tasr_alloc(xqb > xqp ? xqb : xqp, 1);
     s->W.xs = (float *)tasr_alloc(sizeof(float) * RB, 1);
     for (int w = 0; w < NWA; w++) {
-        if (m->bits == 4) s->W.wtmp[w] = (int8_t *)tasr_alloc(16 * s->W.ldq + 16, 1);
+        if (m->bits == 4) s->W.wtmp[w] = (int8_t *)tasr_alloc(16 * s->W.ldq + 64, 1);  // int4 unpack tile (+64: blk16 reads ahead)
         s->W.acc[w] = (int32_t *)tasr_alloc(sizeof(int32_t) * 64 * 16, 1);
         s->W.rmw[w] = (float *)tasr_alloc(sizeof(float) * RB, 1);
     }

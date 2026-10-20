@@ -6,7 +6,14 @@ typedef struct {
     const int8_t *w;  // int8: [n][kp]; int4: packed [n][kp/2] (per 32-block: byte j = w[j] | w[j+16] << 4, offset +8)
     const float *s;   // [n] per-row weight scale
     const float *b;   // [n] bias
+    const uint16_t *wn2;  // [n] ceil(|w_j|^2 / 128) for int8 rows of kp <= 256 (tasr_qlin_norms), or NULL
 } tasr_qlin_t;
+
+// per-output squared norms for the broadcast int8 kernel's overflow bound (NULL when the layer cannot use it)
+const uint16_t *tasr_qlin_norms(const tasr_qlin_t *L);
+// 1: int8 layers with kp <= 256 use the broadcast kernel wherever the bound proves its 20-bit lanes cannot overflow
+// (same results as the x-stationary kernel); 0: always the x-stationary kernel (benchmark hook)
+extern int tasr_xt_enable;
 
 // out[t] = dot(x + t*ldq, w) for t < T (kp multiple of 16, 16-byte aligned rows)
 void tasr_dot_rows_s8(const int8_t *w, const int8_t *x, int ldq, int T, int kp, int32_t *out);
