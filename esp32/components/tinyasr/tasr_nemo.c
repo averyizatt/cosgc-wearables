@@ -123,6 +123,7 @@ tasr_nemo_t *tasr_nemo_load(const uint8_t *blob, size_t size)
     uint32_t hd[15];
     memcpy(hd, blob + 4, sizeof(hd));
     tasr_nemo_t *m = (tasr_nemo_t *)tasr_alloc(sizeof(tasr_nemo_t), 1);
+    tasr_xt_reserve();
     m->d = hd[1]; m->h = hd[2]; m->ff = hd[3]; m->k = hd[4]; m->nl = hd[5]; m->sc = hd[6]; m->V = hd[7];
     const int bits = hd[8];
     m->bits = bits;
@@ -758,6 +759,7 @@ static void nim_job(void *p, int b, int e, int w)
     nim_t *j = (nim_t *)p;
     const tasr_nemo_t *m = j->m;
     const int sc = m->sc, f1p = m->f1 + 2, K = m->c2.k, kp = m->c2.kp;
+    float inv[64];  // f2 <= 64 output positions
     for (int f = b; f < e; f++) {
         float mx = 0.f;
         for (int dt = 0; dt < 3; dt++)
@@ -767,27 +769,32 @@ static void nim_job(void *p, int b, int e, int w)
                     mx = v > mx ? v : mx;
                 }
         if (mx < 1e-30f) mx = 1e-30f;
-        const float inv = 127.0f / mx;
+        inv[f - b] = 127.0f / mx;
         int8_t *q = j->col + (size_t)f * kp;
-        // channel-outer: each channel's 9 patch bytes are written contiguously (the dt-outer order stored 3 bytes
-        // 9 apart per pass); a missing row (padding) reads zeros, which quantize to 0
-        static const float zrow[3] = {0.f, 0.f, 0.f};
-        const float *x0 = j->rows[0] ? j->rows[0] + 2 * f : zrow, *x1 = j->rows[1] ? j->rows[1] + 2 * f : zrow;
-        const float *x2 = j->rows[2] ? j->rows[2] + 2 * f : zrow;
-        const int s0 = j->rows[0] ? f1p : 0, s1 = j->rows[1] ? f1p : 0, s2 = j->rows[2] ? f1p : 0;
-        for (int ch = 0; ch < sc; ch++, x0 += s0, x1 += s1, x2 += s2, q += 9) {
-            const int a0 = (int)((x0[0] * inv + 12582912.0f) - 12582912.0f), a1 = (int)((x0[1] * inv + 12582912.0f) - 12582912.0f);
-            const int a2 = (int)((x0[2] * inv + 12582912.0f) - 12582912.0f), b0 = (int)((x1[0] * inv + 12582912.0f) - 12582912.0f);
-            const int b1 = (int)((x1[1] * inv + 12582912.0f) - 12582912.0f), b2 = (int)((x1[2] * inv + 12582912.0f) - 12582912.0f);
-            const int c0 = (int)((x2[0] * inv + 12582912.0f) - 12582912.0f), c1 = (int)((x2[1] * inv + 12582912.0f) - 12582912.0f);
-            const int c2 = (int)((x2[2] * inv + 12582912.0f) - 12582912.0f);
+        for (int k = K; k < kp; k++) q[k] = 0;
+        j->xs[f] = mx / 127.0f;
+    }
+    // channel-outer, positions inner: the three conv0 rows (3 x 30 KB, more than the data cache) are read once per
+    // call instead of once per position, and each channel's 9 patch bytes are written contiguously. A missing row
+    // (padding) reads zeros, which quantize to 0.
+    static const float zrow[3] = {0.f, 0.f, 0.f};
+    const float *r0 = j->rows[0] ? j->rows[0] : zrow, *r1 = j->rows[1] ? j->rows[1] : zrow, *r2 = j->rows[2] ? j->rows[2] : zrow;
+    const int s0 = j->rows[0] ? f1p : 0, s1 = j->rows[1] ? f1p : 0, s2 = j->rows[2] ? f1p : 0;  // per channel
+    const int g0 = j->rows[0] ? 2 : 0, g1 = j->rows[1] ? 2 : 0, g2 = j->rows[2] ? 2 : 0;        // per position
+    for (int ch = 0; ch < sc; ch++, r0 += s0, r1 += s1, r2 += s2) {
+        const float *x0 = r0 + g0 * b, *x1 = r1 + g1 * b, *x2 = r2 + g2 * b;
+        int8_t *q = j->col + (size_t)b * kp + (size_t)ch * 9;
+        for (int f = b; f < e; f++, x0 += g0, x1 += g1, x2 += g2, q += kp) {
+            const float iv = inv[f - b];
+            const int a0 = (int)((x0[0] * iv + 12582912.0f) - 12582912.0f), a1 = (int)((x0[1] * iv + 12582912.0f) - 12582912.0f);
+            const int a2 = (int)((x0[2] * iv + 12582912.0f) - 12582912.0f), b0 = (int)((x1[0] * iv + 12582912.0f) - 12582912.0f);
+            const int b1 = (int)((x1[1] * iv + 12582912.0f) - 12582912.0f), b2 = (int)((x1[2] * iv + 12582912.0f) - 12582912.0f);
+            const int c0 = (int)((x2[0] * iv + 12582912.0f) - 12582912.0f), c1 = (int)((x2[1] * iv + 12582912.0f) - 12582912.0f);
+            const int c2 = (int)((x2[2] * iv + 12582912.0f) - 12582912.0f);
             q[0] = (int8_t)a0; q[1] = (int8_t)a1; q[2] = (int8_t)a2;
             q[3] = (int8_t)b0; q[4] = (int8_t)b1; q[5] = (int8_t)b2;
             q[6] = (int8_t)c0; q[7] = (int8_t)c1; q[8] = (int8_t)c2;
         }
-        q = j->col + (size_t)f * kp;
-        for (int k = K; k < kp; k++) q[k] = 0;
-        j->xs[f] = mx / 127.0f;
     }
 }
 
@@ -1561,7 +1568,7 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
             s->nk = k0 + n;
             NB(ta);
             satt_t aj = {s, li, n};
-            tasr_parallel(satt_job, &aj, H);
+            NPAR(7, satt_job, &aj, H);
             NE(ta, N_ATT);
             s->nk = nk_save;
         }
@@ -1581,7 +1588,7 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
         {
             NB(td);
             ndw_t jd = {gh, s->att, L, n, d, m->k, s->W.rmx};  // att is free again: use it for the conv output
-            tasr_parallel(ndw_job, &jd, n);
+            NPAR(8, ndw_job, &jd, n);
             NE(td, N_DW);
         }
         memmove(gh, gh + (size_t)n * d, sizeof(float) * halo * d);  // last halo inputs become the past rows
@@ -1628,7 +1635,7 @@ static void s_conv0_row(struct tasr_nemo_stream *s, int r)
     }
     nc0_t j = {m, (const float(*)[NMEL + 2])P, s->c0ring + (size_t)(r % 3) * sc * (f1 + 2), s->cmw};
     memset(s->cmw, 0, sizeof(float) * NW * (f1 + 2));
-    tasr_parallel(nc0_job, &j, sc);
+    NPAR(5, nc0_job, &j, sc);
     float *cm = s->cmaxr + (size_t)(r % 3) * (f1 + 2);
     for (int f = 0; f < f1 + 2; f++) {
         float v = s->cmw[f];
@@ -1692,7 +1699,7 @@ static void s_advance(struct tasr_nemo_stream *s)
         if (tend > s->mel_t) {
             NB(tf);
             smel_t j = {s, s->mel_t, s->n_samp};
-            tasr_parallel(smel_job, &j, tend - s->mel_t);
+            NPAR(0, smel_job, &j, tend - s->mel_t);
             s->mel_t = tend;
             NE(tf, N_FEAT);
         }
@@ -1716,7 +1723,7 @@ static void s_advance(struct tasr_nemo_stream *s)
                 j.rows[dt] = (r >= 0 && !(s->finished && r >= s->T1)) ? s->c0ring + (size_t)(r % 3) * m->sc * (m->f1 + 2) : NULL;
                 j.cmax[dt] = s->cmaxr + (size_t)((r + 3) % 3) * (m->f1 + 2);
             }
-            tasr_parallel(nim_job, &j, f2);
+            NPAR(6, nim_job, &j, f2);
         }
         NE(tim, N_IM2COL);
         s->t2_next++;

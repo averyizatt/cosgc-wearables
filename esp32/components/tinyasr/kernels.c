@@ -336,6 +336,18 @@ static int8_t *xt_scratch(void)
     return s_xt;
 }
 #endif
+void tasr_xt_reserve(void)
+{
+#if defined(ESP_PLATFORM)
+#ifdef TASR_SINGLE_CORE
+    const int ncores = 1;
+#else
+    const int ncores = 2;
+#endif
+    for (int c = 0; c < ncores; c++)
+        if (!s_xt[c]) s_xt[c] = (int8_t *)tasr_alloc(XT_BYTES, 1);
+#endif
+}
 
 // SiLU sigmoid, the same table lookup as the engines' nsig()
 static inline float ep_sig(float x, const float *tab, const float *slope)
