@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -14,6 +16,7 @@
 #include "tinyasr.h"
 #include "tasr_nemo.h"
 #include "tasr_seg.h"
+#include "led.h"
 #include "oled.h"
 
 #ifdef CONFIG_TASR_MODE_MIC
@@ -23,6 +26,18 @@
 static StreamBufferHandle_t g_ring;
 static i2s_chan_handle_t g_rx;
 
+#if CONFIG_TASR_PTT_GPIO >= 0
+// Push-to-talk: the capture task (real time) debounces the button and queues each press / release with the index of
+// the audio sample it happened at; the recognizer, which runs behind real time, acts on it when it reaches that sample
+// in the audio, so releasing the button never cuts off the last words still waiting in the ring.
+typedef struct {
+    uint32_t at;   // sample index in the ring's stream (samples actually queued)
+    uint8_t down;
+    int64_t t_us;  // when the capture task saw it (esp_timer)
+} ptt_ev_t;
+static QueueHandle_t g_ptt;
+#endif
+
 static void capture_task(void *arg)
 {
     (void)arg;
@@ -30,6 +45,11 @@ static void capture_task(void *arg)
     static int16_t pcm[320];
     float dc = 0.f;
     int dropped = 0;  // samples lost in the current overflow episode
+#if CONFIG_TASR_PTT_GPIO >= 0
+    uint32_t queued = 0;           // samples queued so far
+    int state = 0, seen = 0;       // debounced button state; blocks in a row that read the other state
+    uint32_t seen_at = 0;
+#endif
     for (;;) {
         size_t got = 0;
         i2s_channel_read(g_rx, raw, sizeof(raw), &got, portMAX_DELAY);
@@ -40,12 +60,33 @@ static void capture_task(void *arg)
             float y = x - dc;
             pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
         }
+#if CONFIG_TASR_PTT_GPIO >= 0
+        const int down = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0;  // button to GND, internal pull-up
+        if (down != state) {
+            if (!seen++) seen_at = queued;  // the first block that read the new state
+            if (seen >= 2) {                // stable for 40 ms
+                state = down;
+                seen = 0;
+                const ptt_ev_t ev = {seen_at, (uint8_t)down, esp_timer_get_time()};
+                xQueueSend(g_ptt, &ev, 0);
+            }
+        } else {
+            seen = 0;
+        }
+#endif
         const int sent = (int)(xStreamBufferSend(g_ring, pcm, n * 2, 0) / 2);
+#if CONFIG_TASR_PTT_GPIO >= 0
+        queued += sent;
+#endif
         if (sent < n) {
-            if (!dropped) ESP_LOGW("mic", "audio buffer full: recognition is behind, dropping audio");
+            if (!dropped) {
+                ESP_LOGW("mic", "audio buffer full: recognition is behind, dropping audio");
+                led_set(LED_BEHIND);
+            }
             dropped += n - sent;
         } else if (dropped) {
             ESP_LOGW("mic", "audio buffer has room again: %d ms of audio were lost", dropped / 16);
+            led_set(LED_BUSY);
             dropped = 0;
         }
     }
@@ -75,10 +116,105 @@ static void mic_start(void)
     uint8_t *storage = heap_caps_malloc(RING_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM);
     static StaticStreamBuffer_t sb;
     g_ring = xStreamBufferCreateStatic(RING_SAMPLES * 2, 2, storage, &sb);
+#if CONFIG_TASR_PTT_GPIO >= 0
+    const gpio_config_t io = {.pin_bit_mask = 1ULL << CONFIG_TASR_PTT_GPIO, .mode = GPIO_MODE_INPUT,
+                              .pull_up_en = GPIO_PULLUP_ENABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                              .intr_type = GPIO_INTR_DISABLE};
+    ESP_ERROR_CHECK(gpio_config(&io));
+    g_ptt = xQueueCreate(16, sizeof(ptt_ev_t));
+    ESP_LOGI(TAG, "push-to-talk button on GPIO%d (to GND): hold it while you speak", CONFIG_TASR_PTT_GPIO);
+#endif
     xTaskCreatePinnedToCore(capture_task, "mic_cap", 4096, NULL, configMAX_PRIORITIES - 1, NULL, TASR_AUX_CORE);
     ESP_LOGI(TAG, "listening (BCLK %d WS %d DIN %d)", CONFIG_TASR_I2S_BCLK, CONFIG_TASR_I2S_WS, CONFIG_TASR_I2S_DIN);
 }
 
+#endif
+
+#if defined(CONFIG_TASR_MODE_MIC) && CONFIG_TASR_PTT_GPIO >= 0
+#define PTT_PRE 4800  // 0.3 s of audio from before the press (a word started as the button goes down)
+#define PTT_MIN 2400  // presses shorter than 0.15 s are ignored
+#define PTT_CAP (16000 * 20)
+// Push-to-talk: an utterance is the audio between a press and a release (plus the pre-roll). Streaming models are fed
+// while the button is held; the final text comes as soon as the recognizer reaches the release, with no pause to wait.
+static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
+{
+    int16_t *utt = heap_caps_malloc(sizeof(int16_t) * PTT_CAP, MALLOC_CAP_SPIRAM);  // the recording (utterance mode)
+    static int16_t in[320], blk[320], pre[PTT_PRE];
+    static char text[4096];
+    static tasr_seg_t seg;  // only its AGC
+    tasr_seg_init(&seg, NULL, 0);
+    oled_start();
+    char idle[32] = "* hold button to talk";
+    oled_status(idle);
+    tasr_nemo_stream_t *st = tasr_nemo_stream_new(m, 0, 0, dec);
+    printf("ready (%s, push-to-talk on GPIO%d, %.2f s after boot): hold the button while you speak\n",
+           st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
+    uint32_t rd = 0;  // samples taken from the ring
+    int active = 0, n_utt = 0, npre = 0, pw = 0, pre_used = 0;
+    led_set(LED_IDLE);
+    for (;;) {
+        const int n = (int)(xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY) / 2);
+        ptt_ev_t ev;
+        while (xQueuePeek(g_ptt, &ev, 0) == pdTRUE && (ev.at <= rd || (active && n_utt + n > PTT_CAP))) {
+            const int full = !(ev.at <= rd);  // recording full: end it here, keep the release for later
+            if (!full) xQueueReceive(g_ptt, &ev, 0);
+            if (!full && ev.down && !active) {  // press: start with the pre-roll, oldest sample first
+                active = 1;
+                n_utt = 0;
+                for (int i = 0; i < npre; i++) utt[i] = pre[(pw - npre + i + PTT_PRE) % PTT_PRE];
+                n_utt = pre_used = npre;
+                if (st) {
+                    tasr_nemo_stream_reset(st);
+                    tasr_nemo_stream_feed(st, utt, n_utt);
+                }
+                oled_status("* hearing you...");
+                led_set(LED_LISTEN);
+                continue;
+            }
+            if (!active || (!full && ev.down)) continue;
+            active = 0;  // release (or full): the utterance ends at this sample
+            npre = 0;
+            if (n_utt - pre_used < PTT_MIN) {  // a tap
+                oled_status(idle);
+                led_set(LED_NOTHING);
+                continue;
+            }
+            led_set(LED_BUSY);
+            const int64_t t0 = esp_timer_get_time();
+            if (st) tasr_nemo_stream_finish(st, text, sizeof(text));
+            else tasr_nemo_transcribe(m, utt, n_utt, dec, text, sizeof(text), NULL, 0, NULL);
+            const int64_t t1 = esp_timer_get_time();
+            const double after = full ? (t1 - t0) / 1e3 : (t1 - ev.t_us) / 1e3;
+            printf("\r%s   [%.1f s audio, final text %.0f ms after %s]\n", text, n_utt / 16000.0, after,
+                   full ? "the 20 s limit (compute)" : "the button was released");
+            oled_push(text[0] ? text : "(nothing recognized)");
+            led_set(text[0] ? LED_DONE : LED_NOTHING);
+            snprintf(idle, sizeof(idle), "* hold to talk  +%.0f ms", after);
+            oled_status(idle);
+            if (full) break;
+        }
+        tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
+        rd += n;
+        if (!active) {  // idle: keep the last 0.3 s as pre-roll
+            for (int i = 0; i < n; i++) pre[(pw + i) % PTT_PRE] = blk[i];
+            pw = (pw + n) % PTT_PRE;
+            npre = npre + n < PTT_PRE ? npre + n : PTT_PRE;
+            continue;
+        }
+        if (st) {
+            const int before = tasr_nemo_stream_text(st, NULL, 0);
+            if (tasr_nemo_stream_feed(st, blk, n) > before) {
+                tasr_nemo_stream_text(st, text, sizeof(text));
+                printf("\r... %s", text);
+                fflush(stdout);
+                oled_partial(text);
+            }
+        } else {
+            memcpy(utt + n_utt, blk, sizeof(int16_t) * n);
+        }
+        n_utt += n;
+    }
+}
 #endif
 
 // Utterance mode for the NeMo engine: record while speech is detected (max 20 s), transcribe after 0.6 s of silence.
@@ -86,6 +222,9 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
 {
 #ifdef CONFIG_TASR_MODE_MIC
     mic_start();
+#if CONFIG_TASR_PTT_GPIO >= 0
+    run_mic_ptt(m, dec);  // does not return
+#endif
     const int cap = 16000 * 20;
     int16_t *utt = heap_caps_malloc(sizeof(int16_t) * cap, MALLOC_CAP_SPIRAM);
     static int16_t in[320];
@@ -102,6 +241,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
         printf("ready (streaming, %.2f s after boot): speak, partial text follows you, the final line prints after each pause\n",
                esp_timer_get_time() / 1e6);
         int fed = 0;
+        led_set(LED_IDLE);
         for (;;) {
             size_t got = xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY);
             const int n = tasr_seg_feed(&seg, in, (int)(got / 2));
@@ -109,7 +249,9 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 tasr_nemo_stream_reset(st);
                 fed = 0;
                 oled_status(idle);
+                led_set(LED_IDLE);
             }
+            if (seg.speech && !hearing) led_set(LED_LISTEN);
             hearing = seg.speech;
             if (!seg.speech && !n) continue;
             const int have = n ? n : seg.n;
@@ -124,11 +266,13 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 fed = have;
             }
             if (!n) continue;
+            led_set(LED_BUSY);
             int64_t t0 = esp_timer_get_time();
             tasr_nemo_stream_finish(st, text, sizeof(text));
             const double dt = (esp_timer_get_time() - t0) / 1e6;
             printf("\r%s   [%.1f s audio, final text %.0f ms after the pause was detected]\n", text, n / 16000.0, dt * 1000);
             oled_push(text[0] ? text : "(nothing recognized)");
+            led_set(text[0] ? LED_DONE : LED_NOTHING);
             snprintf(idle, sizeof(idle), "* listening  +%.0f ms", dt * 1000);
             oled_status(idle);
             tasr_nemo_stream_reset(st);
@@ -138,20 +282,24 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
         }
     }
     printf("ready (%.2f s after boot): speak, the transcript prints after each pause\n", esp_timer_get_time() / 1e6);
+    led_set(LED_IDLE);
     for (;;) {
         size_t got = xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY);
         const int n = tasr_seg_feed(&seg, in, (int)(got / 2));
         if (seg.speech != hearing) {  // speech started, or a blip was discarded
             hearing = seg.speech;
             oled_status(hearing ? "* hearing you..." : idle);
+            led_set(hearing ? LED_LISTEN : LED_IDLE);
         }
         if (!n) continue;
         oled_status("transcribing...");
+        led_set(LED_BUSY);
         int64_t t0 = esp_timer_get_time();
         tasr_nemo_transcribe(m, utt, n, dec, text, sizeof(text), NULL, 0, NULL);
         const double dt = (esp_timer_get_time() - t0) / 1e6;
         printf("%s   [%.1f s audio, %.2f s compute, RTF %.2f]\n", text, n / 16000.0, dt, dt / (n / 16000.0));
         oled_push(text[0] ? text : "(nothing recognized)");
+        led_set(text[0] ? LED_DONE : LED_NOTHING);
         snprintf(idle, sizeof(idle), "* listening  rtf %.2f", dt / (n / 16000.0));
         oled_status(idle);
         hearing = 0;

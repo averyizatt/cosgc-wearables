@@ -16,6 +16,22 @@ menu "tinyasr"
     config TASR_I2S_DIN
         int "I2S data-in (SD) GPIO"
         default 6
+    config TASR_PTT_GPIO
+        int "Push-to-talk button GPIO (button to GND, internal pull-up); -1 = none"
+        default -1
+        range -1 48
+        help
+            With a button, an utterance is what you say while holding it (plus 0.3 s from before the press) and the
+            final text comes as soon as it is released, with no end-of-speech pause; noise is never transcribed.
+            Without one (-1), the energy VAD starts and ends utterances.
+    config TASR_LED_GPIO
+        int "Status LED: addressable RGB LED (WS2812) GPIO; -1 = none"
+        default -1
+        range -1 48
+        help
+            GPIO48 on ESP32-S3-DevKitC-1 v1.0 (and most N16R8 clones), GPIO38 on v1.1. Dim blue: loading; dim green:
+            ready; blue: hearing you; amber: computing the final text; green flash: text ready; red flash: nothing
+            recognized; purple: audio buffer full (recognition is behind, audio is dropped).
     config TASR_SEG_HANG_MS
         int "Pause (ms) that ends an utterance in microphone mode"
         default 800

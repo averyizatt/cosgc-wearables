@@ -14,6 +14,7 @@
 #include "tinyasr.h"
 #include "tinyasr_lm.h"
 #include "tasr_nemo.h"
+#include "led.h"
 
 static const char *TAG = "tinyasr";
 
@@ -263,6 +264,7 @@ void app_main(void)
 #ifdef CONFIG_TASR_KERNEL_BENCH
     vTaskDelay(pdMS_TO_TICKS(3000));  // benchmark builds: on the native USB console, give the monitor time to attach
 #endif
+    led_start();  // dim blue while the model loads
     calibrate();
     tasr_alloc = fw_alloc;
     tasr_free = fw_free;

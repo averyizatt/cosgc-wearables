@@ -16,3 +16,9 @@ CONFIG_TASR_OLED_ADDR=0x3C
 
 # Pause that ends an utterance and prints its final line
 CONFIG_TASR_SEG_HANG_MS=800
+
+# Push-to-talk button: GPIO7 to GND (hold while speaking)
+CONFIG_TASR_PTT_GPIO=7
+
+# On-board RGB status LED (WS2812): GPIO48 on DevKitC-1 v1.0 / most clones, GPIO38 on v1.1
+CONFIG_TASR_LED_GPIO=48

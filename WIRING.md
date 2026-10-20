@@ -21,11 +21,19 @@ A classic ESP32 (ESP32-WROOM-32 / "ESP32 DevKit V1") does not work: it lacks the
 | | GND | GND |
 | | SDA | GPIO8 |
 | | SCL | GPIO9 |
+| Push-to-talk button | one side | GPIO7 |
+| | other side | GND (internal pull-up; hold while speaking) |
+| Status LED | on board (WS2812) | GPIO48 (DevKitC-1 v1.0 and most clones; GPIO38 on v1.1) |
 
 - Power both modules from **3V3**, not 5V.
 - Do not leave L/R floating. If it is floating, the mic may output on the right channel, and you get silence.
 - Pins to avoid on an N16R8 board: GPIO26–32 (flash), 33–37 (octal PSRAM), 0/3/45/46 (strapping), 19/20 (USB),
   43/44 (serial console).
+- With the button, an utterance is what you say while holding it (plus 0.3 s from before the press); the final text
+  comes as soon as you let go, with no end-of-speech pause, and room noise is never transcribed. Set
+  `CONFIG_TASR_PTT_GPIO=-1` to go back to voice-activity detection.
+- LED: dim blue loading, dim green ready, blue hearing you, amber computing, green flash text ready, red flash nothing
+  recognized, purple audio dropped (recognition is behind).
 - To change pins or the OLED address (0x3C or 0x3D), edit [`esp32/firmware/sdkconfig.myboard`](esp32/firmware/sdkconfig.myboard).
 
 ## Build and flash (PlatformIO)
