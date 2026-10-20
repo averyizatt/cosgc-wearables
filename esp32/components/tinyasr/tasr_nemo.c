@@ -717,7 +717,21 @@ static void nc0_job(void *p, int b, int e, int w)
         float *o = j->out + (size_t)ch * (f1 + 2);
         o[0] = 0.f;
         o[f1 + 1] = 0.f;
-        for (int f = 0; f < f1; f++) {
+        int f = 0;
+        for (; f + 1 < f1; f += 2) {  // two columns per pass: independent float chains, shared middle column loads
+            const float *p0 = &j->P[0][2 * f], *p1 = &j->P[1][2 * f], *p2 = &j->P[2][2 * f];
+            const float a0 = p0[0], a1 = p0[1], a2 = p0[2], a3 = p0[3], a4 = p0[4];
+            const float b0 = p1[0], b1 = p1[1], b2 = p1[2], b3 = p1[3], b4 = p1[4];
+            const float c0 = p2[0], c1 = p2[1], c2 = p2[2], c3 = p2[3], c4 = p2[4];
+            const float s = bias + w0 * a0 + w1 * a1 + w2 * a2 + w3 * b0 + w4 * b1 + w5 * b2 + w6 * c0 + w7 * c1 + w8 * c2;
+            const float u = bias + w0 * a2 + w1 * a3 + w2 * a4 + w3 * b2 + w4 * b3 + w5 * b4 + w6 * c2 + w7 * c3 + w8 * c4;
+            const float v = s > 0.f ? s : 0.f, v2 = u > 0.f ? u : 0.f;
+            o[1 + f] = v;
+            o[2 + f] = v2;
+            cm[1 + f] = v > cm[1 + f] ? v : cm[1 + f];
+            cm[2 + f] = v2 > cm[2 + f] ? v2 : cm[2 + f];
+        }
+        for (; f < f1; f++) {
             const float *p0 = &j->P[0][2 * f], *p1 = &j->P[1][2 * f], *p2 = &j->P[2][2 * f];
             float acc = bias + w0 * p0[0] + w1 * p0[1] + w2 * p0[2] + w3 * p1[0] + w4 * p1[1] + w5 * p1[2] + w6 * p2[0] +
                         w7 * p2[1] + w8 * p2[2];
@@ -755,20 +769,23 @@ static void nim_job(void *p, int b, int e, int w)
         if (mx < 1e-30f) mx = 1e-30f;
         const float inv = 127.0f / mx;
         int8_t *q = j->col + (size_t)f * kp;
-        for (int dt = 0; dt < 3; dt++) {
-            const float *r = j->rows[dt];
-            int8_t *qd = q + dt * 3;
-            if (!r) {
-                for (int ch = 0; ch < sc; ch++) qd[ch * 9] = qd[ch * 9 + 1] = qd[ch * 9 + 2] = 0;
-                continue;
-            }
-            const float *x = r + 2 * f;
-            for (int ch = 0; ch < sc; ch++, x += f1p, qd += 9) {
-                qd[0] = (int8_t)(int)((x[0] * inv + 12582912.0f) - 12582912.0f);
-                qd[1] = (int8_t)(int)((x[1] * inv + 12582912.0f) - 12582912.0f);
-                qd[2] = (int8_t)(int)((x[2] * inv + 12582912.0f) - 12582912.0f);
-            }
+        // channel-outer: each channel's 9 patch bytes are written contiguously (the dt-outer order stored 3 bytes
+        // 9 apart per pass); a missing row (padding) reads zeros, which quantize to 0
+        static const float zrow[3] = {0.f, 0.f, 0.f};
+        const float *x0 = j->rows[0] ? j->rows[0] + 2 * f : zrow, *x1 = j->rows[1] ? j->rows[1] + 2 * f : zrow;
+        const float *x2 = j->rows[2] ? j->rows[2] + 2 * f : zrow;
+        const int s0 = j->rows[0] ? f1p : 0, s1 = j->rows[1] ? f1p : 0, s2 = j->rows[2] ? f1p : 0;
+        for (int ch = 0; ch < sc; ch++, x0 += s0, x1 += s1, x2 += s2, q += 9) {
+            const int a0 = (int)((x0[0] * inv + 12582912.0f) - 12582912.0f), a1 = (int)((x0[1] * inv + 12582912.0f) - 12582912.0f);
+            const int a2 = (int)((x0[2] * inv + 12582912.0f) - 12582912.0f), b0 = (int)((x1[0] * inv + 12582912.0f) - 12582912.0f);
+            const int b1 = (int)((x1[1] * inv + 12582912.0f) - 12582912.0f), b2 = (int)((x1[2] * inv + 12582912.0f) - 12582912.0f);
+            const int c0 = (int)((x2[0] * inv + 12582912.0f) - 12582912.0f), c1 = (int)((x2[1] * inv + 12582912.0f) - 12582912.0f);
+            const int c2 = (int)((x2[2] * inv + 12582912.0f) - 12582912.0f);
+            q[0] = (int8_t)a0; q[1] = (int8_t)a1; q[2] = (int8_t)a2;
+            q[3] = (int8_t)b0; q[4] = (int8_t)b1; q[5] = (int8_t)b2;
+            q[6] = (int8_t)c0; q[7] = (int8_t)c1; q[8] = (int8_t)c2;
         }
+        q = j->col + (size_t)f * kp;
         for (int k = K; k < kp; k++) q[k] = 0;
         j->xs[f] = mx / 127.0f;
     }

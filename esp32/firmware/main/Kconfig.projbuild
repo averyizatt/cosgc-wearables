@@ -67,6 +67,10 @@ menu "tinyasr"
         bool "Experiment: enable TASR_PAR_MASK"
         default n
 
+    config TASR_EXP_LM_SERIAL
+        bool "Experiment (two cores): run the language model's matrix products on one core"
+        default n
+
     config TASR_EXP_XQ_COPY
         bool "Experiment: worker 1 reads a private copy of the activation tile in the K=704 GEMMs"
         default n

@@ -137,6 +137,45 @@ TASR_DOT_ATTR __attribute__((noinline, optimize("no-branch-count-reg"))) void ta
         } else {
             __asm__ volatile("ee.zero.accx\n" ::: "memory");
         }
+#ifdef TASR_DOT_LOOP8
+        // experiment: a hardware loop body of 8 instructions (4 vectors) instead of 4
+        if (m & 2) {
+            __asm__ volatile(
+                "ee.vld.128.ip q0, %0, 16\n"
+                "ee.vld.128.ip q1, %1, 16\n"
+                "ee.vld.128.ip q2, %0, 16\n"
+                "ee.vld.128.ip q3, %1, 16\n"
+                "ee.vmulas.s8.accx q0, q1\n"
+                "ee.vmulas.s8.accx q2, q3\n"
+                : "+r"(pa), "+r"(pb) : : "memory");
+            m -= 2;
+        }
+        if (m) {
+            int quads = m >> 2;
+            __asm__ volatile(
+                "ee.vld.128.ip q0, %0, 16\n"
+                "ee.vld.128.ip q1, %1, 16\n"
+                "addi %2, %2, -1\n"
+                "loopnez %2, 1f\n"
+                "  ee.vld.128.ip q2, %0, 16\n"
+                "  ee.vmulas.s8.accx.ld.ip q3, %1, 16, q0, q1\n"
+                "  ee.vld.128.ip q0, %0, 16\n"
+                "  ee.vmulas.s8.accx.ld.ip q1, %1, 16, q2, q3\n"
+                "  ee.vld.128.ip q2, %0, 16\n"
+                "  ee.vmulas.s8.accx.ld.ip q3, %1, 16, q0, q1\n"
+                "  ee.vld.128.ip q0, %0, 16\n"
+                "  ee.vmulas.s8.accx.ld.ip q1, %1, 16, q2, q3\n"
+                "1:\n"
+                "ee.vld.128.ip q2, %0, 16\n"
+                "ee.vmulas.s8.accx.ld.ip q3, %1, 16, q0, q1\n"
+                "ee.vld.128.ip q0, %0, 16\n"
+                "ee.vmulas.s8.accx.ld.ip q1, %1, 16, q2, q3\n"
+                "ee.vld.128.ip q2, %0, 16\n"
+                "ee.vmulas.s8.accx.ld.ip q3, %1, 16, q0, q1\n"
+                "ee.vmulas.s8.accx q2, q3\n"
+                : "+r"(pa), "+r"(pb), "+r"(quads) : : "memory");
+        }
+#else
         if (m) {
             int pairs = m >> 1;
             __asm__ volatile(
@@ -154,6 +193,7 @@ TASR_DOT_ATTR __attribute__((noinline, optimize("no-branch-count-reg"))) void ta
                 "ee.vmulas.s8.accx q2, q3\n"
                 : "+r"(pa), "+r"(pb), "+r"(pairs) : : "memory");
         }
+#endif
         __asm__ volatile("rur.accx_0 %0\n" : "=r"(r));
         out[t] = r;
     }

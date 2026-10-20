@@ -138,7 +138,11 @@ static void lm_gemm_job(void *c, int b, int e, int w)
 static void lm_qlin(tasr_decoder_t *d, const tasr_qlin_t *L, int T, float *y, int ldy)
 {
     lmjob_t j = {d, L, T, ldy, y};
+#ifdef CONFIG_TASR_EXP_LM_SERIAL
+    lm_gemm_job(&j, 0, L->n, 0);  // experiment: the LM's GEMMs on one core (row kernel on both cores crashes, README)
+#else
     tasr_parallel(lm_gemm_job, &j, L->n);  // split output rows across both cores
+#endif
 }
 
 static int slot_alloc(tasr_decoder_t *d) { return d->n_free > 0 ? d->free_slots[--d->n_free] : -1; }
