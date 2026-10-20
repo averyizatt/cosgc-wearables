@@ -67,7 +67,7 @@ void oled_start(void)
         return;
     }
     s_mux = xSemaphoreCreateMutex();
-    xTaskCreatePinnedToCore(render_task, "oled", 4096, NULL, 5, &s_task, 0);
+    xTaskCreatePinnedToCore(render_task, "oled", 4096, NULL, 5, &s_task, TASR_AUX_CORE);
     ESP_LOGI(TAG, "SSD1306 ready (SDA %d, SCL %d)", CONFIG_TASR_OLED_SDA, CONFIG_TASR_OLED_SCL);
     xTaskNotifyGive(s_task);
 }

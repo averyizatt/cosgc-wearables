@@ -93,6 +93,14 @@ static void *fw_alloc(size_t n, int kind)
     if (kind == 1 && n <= 48 * 1024 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > n + INTERNAL_RESERVE)
         p = heap_caps_aligned_alloc(16, n ? n : 16, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (kind == 1 && !p) {  // a hot buffer the engine wanted in internal RAM: slower in PSRAM, say so (first few times)
+        static int warned;
+        if (warned < 8) {
+            warned++;
+            ESP_LOGW(TAG, "%u-byte work buffer in PSRAM (internal RAM free %u, reserve %u)", (unsigned)n,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)INTERNAL_RESERVE);
+        }
+    }
     if (!p) p = heap_caps_aligned_alloc(16, n ? n : 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (p) memset(p, 0, n);
     else ESP_LOGE(TAG, "alloc %u kind %d failed", (unsigned)n, kind);
@@ -142,13 +150,27 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     }
     size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 #ifdef CONFIG_TASR_MODE_MIC
-    const size_t reserve = 3600000;  // 20 s utterance buffers (~2.5 MB) + mic ring and recording buffer (0.9 MB)
+#define MIC_PSRAM 1200000            // mic.c: 16 s audio ring (0.5 MB) + 20 s recording buffer (0.64 MB)
+    const size_t reserve = 2500000 + MIC_PSRAM;  // + 20 s utterance buffers (~2.5 MB)
 #else
     const size_t reserve = 2700000;  // per-utterance buffers for clips up to 20 s (1.9 MB measured at 15 s)
 #endif
     const int streaming = tasr_nemo_stream_supported(m);
     // a streaming model also keeps its attention / conv caches and positional rows (~2 MB at chunk 16, left 128)
-    size_t budget = free_ps > reserve + (streaming ? 2200000 : 0) ? free_ps - reserve - (streaming ? 2200000 : 0) : 0;
+    size_t keep = reserve + (streaming ? 2200000 : 0);
+#ifdef CONFIG_TASR_MODE_MIC
+    if (streaming) {  // live streaming never allocates the utterance buffers: keep the stream's measured size instead
+        const size_t f0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        tasr_nemo_stream_t *probe = tasr_nemo_stream_new(m, 0, 0, dec);
+        if (probe) {
+            const size_t sb = f0 - heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            tasr_nemo_stream_free(probe);
+            keep = MIC_PSRAM + sb + 300000;  // mic ring + recording buffer, the stream, headroom
+            ESP_LOGI(TAG, "stream needs %u bytes of PSRAM; the rest caches weights", (unsigned)sb);
+        }
+    }
+#endif
+    size_t budget = free_ps > keep ? free_ps - keep : 0;
 #ifdef CONFIG_TASR_EXP_NO_PSRAM_WEIGHTS
     budget = 0;
 #endif
@@ -234,6 +256,9 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
 
 void app_main(void)
 {
+#ifdef CONFIG_TASR_KERNEL_BENCH
+    vTaskDelay(pdMS_TO_TICKS(3000));  // benchmark builds: on the native USB console, give the monitor time to attach
+#endif
     calibrate();
     tasr_alloc = fw_alloc;
     tasr_free = fw_free;
@@ -248,6 +273,10 @@ void app_main(void)
     const uint8_t *mflash = map_partition(0x40, "model", &msize);
     const uint8_t *aud = map_partition(0x41, "audio", &asize);
     if (!mflash) { ESP_LOGE(TAG, "model partition missing"); return; }
+#ifdef CONFIG_TASR_KERNEL_BENCH
+    extern void run_kernel_bench(const uint8_t *flash, size_t flash_bytes);
+    run_kernel_bench(mflash, msize);
+#endif
     uint32_t blob_size;
     memcpy(&blob_size, mflash, 4);  // image = [u32 size][pad to 16][TASR blob]
     const uint8_t *blob = mflash + 16;

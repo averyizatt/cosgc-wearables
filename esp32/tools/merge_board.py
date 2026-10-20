@@ -37,7 +37,7 @@ if prof_json and "en_nemo8" in res:
     board = collections.Counter()
     for l in open(os.path.join(rd, "results_en_nemo8.json.log")):
         m = re.match(r"PROF (\S+)\s+(\d+) cycles", l)
-        if m:
+        if m and not m.group(1).startswith("("):  # "(decoder)" is a part of head+dec, not another stage
             board[m.group(1)] += int(m.group(2))
     aud = res["en_nemo8"]["audio_s"]
     q = json.load(open(prof_json))

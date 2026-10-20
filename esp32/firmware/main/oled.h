@@ -6,6 +6,14 @@
 #define OLED_W 128
 #define OLED_H 64
 
+// core for the mic capture and display tasks: the otherwise idle second core in single-core builds (recognition runs
+// on core 0), core 0 when core 1 runs the engine's worker
+#ifdef TASR_SINGLE_CORE
+#define TASR_AUX_CORE 1
+#else
+#define TASR_AUX_CORE 0
+#endif
+
 void oled_start(void);                  // I2C + panel init and the render task (once)
 void oled_status(const char *s);        // top line, e.g. "listening" / "transcribing..."
 void oled_push(const char *text);       // append a finished utterance to the history

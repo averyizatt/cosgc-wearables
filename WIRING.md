@@ -54,6 +54,7 @@ The OLED shows a status line at the top (`* listening`, `* hearing you...`) and 
 |---|---|---|
 | `oido_s3` (default) | `oido_stream.tnm` + `nemo_lm.tlm` | Words appear while you speak. The final line comes about 4 s after you stop. |
 | `oido_s3_accurate` | `nemo8.tnm` + `nemo_lm.tlm` | The most accurate model. Text appears about 7 s after a short sentence ends. |
+| `oido_s3_bench` | `oido_stream.tnm` + `nemo_lm.tlm` | No mic. Transcribes 4 sample clips from flash and prints the real-time factor (`UTT`, `STREAM`, `PACED`), cycles per stage (`PROF`) and a kernel memory benchmark (`KBENCH`). Run `python esp32/tools/bench_clips.py` once first (needs `soundfile`). |
 
 The chip runs at about 2x real time on one core, so longer sentences take longer to finish. See the main [README](README.md).
 
@@ -61,4 +62,7 @@ The chip runs at about 2x real time on one core, so longer sentences take longer
 
 - **The OLED stays blank, and serial shows `no SSD1306 at 0x3c`.** Check the SDA and SCL wires. If they are right, set `CONFIG_TASR_OLED_ADDR=0x3D`.
 - **`ready` prints, but no text appears when you talk.** Check that L/R is tied to GND and that SD is on GPIO6.
+- **Serial shows `audio buffer full: recognition is behind`.** The chip runs at about 1.8x real time, so during long stretches of
+  speech (or loud noise the VAD takes for speech) it falls behind; after about 16 s of backlog it drops audio, which costs words.
+  The next line says how much was lost. Pause between sentences, or keep the mic away from constant noise.
 - **Nothing appears on serial.** Check that you are on the UART port. On the native USB port, follow the notes in the README.

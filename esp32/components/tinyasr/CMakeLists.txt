@@ -9,3 +9,6 @@ endif()
 if(DEFINED ENV{TASR_DEBUG_DUMP})
     target_compile_definitions(${COMPONENT_LIB} PRIVATE TASR_DEBUG_DUMP)
 endif()
+if(CONFIG_TASR_O3)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O3 -funroll-loops)  # after -O2: the last -O wins
+endif()

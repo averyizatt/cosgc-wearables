@@ -27,3 +27,5 @@ esp32/firmware/sdkconfig.oido_s3*
 /.vscode/launch.json
 /.vscode/ipch
 compile_commands.json
+# benchmark clips made by esp32/tools/bench_clips.py
+esp32/firmware/bench_clips/

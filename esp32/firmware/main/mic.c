@@ -17,7 +17,9 @@
 #include "oled.h"
 
 #ifdef CONFIG_TASR_MODE_MIC
-#define RING_SAMPLES (16000 * 8)  // 8 s of audio headroom (speech continuing while an utterance is transcribed)
+// 16 s of audio headroom (speech continuing while the chip, at ~1.8x real time, catches up): covers the backlog of a
+// 20 s utterance (the longest the segmenter keeps), 9 s at that speed. main.c keeps this much PSRAM free (MIC_PSRAM).
+#define RING_SAMPLES (16000 * 16)
 static StreamBufferHandle_t g_ring;
 static i2s_chan_handle_t g_rx;
 
@@ -27,6 +29,7 @@ static void capture_task(void *arg)
     static int32_t raw[320];
     static int16_t pcm[320];
     float dc = 0.f;
+    int dropped = 0;  // samples lost in the current overflow episode
     for (;;) {
         size_t got = 0;
         i2s_channel_read(g_rx, raw, sizeof(raw), &got, portMAX_DELAY);
@@ -37,7 +40,14 @@ static void capture_task(void *arg)
             float y = x - dc;
             pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
         }
-        if (xStreamBufferSend(g_ring, pcm, n * 2, 0) != (size_t)n * 2) ESP_LOGW("mic", "ring overflow");
+        const int sent = (int)(xStreamBufferSend(g_ring, pcm, n * 2, 0) / 2);
+        if (sent < n) {
+            if (!dropped) ESP_LOGW("mic", "audio buffer full: recognition is behind, dropping audio");
+            dropped += n - sent;
+        } else if (dropped) {
+            ESP_LOGW("mic", "audio buffer has room again: %d ms of audio were lost", dropped / 16);
+            dropped = 0;
+        }
     }
 }
 #endif
@@ -65,7 +75,7 @@ static void mic_start(void)
     uint8_t *storage = heap_caps_malloc(RING_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM);
     static StaticStreamBuffer_t sb;
     g_ring = xStreamBufferCreateStatic(RING_SAMPLES * 2, 2, storage, &sb);
-    xTaskCreatePinnedToCore(capture_task, "mic_cap", 4096, NULL, configMAX_PRIORITIES - 1, NULL, 0);
+    xTaskCreatePinnedToCore(capture_task, "mic_cap", 4096, NULL, configMAX_PRIORITIES - 1, NULL, TASR_AUX_CORE);
     ESP_LOGI(TAG, "listening (BCLK %d WS %d DIN %d)", CONFIG_TASR_I2S_BCLK, CONFIG_TASR_I2S_WS, CONFIG_TASR_I2S_DIN);
 }
 
@@ -89,7 +99,8 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
     int hearing = 0;
     tasr_nemo_stream_t *st = tasr_nemo_stream_new(m, 0, 0, dec);
     if (st) {  // streaming model: the encoder runs while you speak; only the last chunk is left when you stop
-        printf("ready (streaming): speak, partial text follows you, the final line prints after each pause\n");
+        printf("ready (streaming, %.2f s after boot): speak, partial text follows you, the final line prints after each pause\n",
+               esp_timer_get_time() / 1e6);
         int fed = 0;
         for (;;) {
             size_t got = xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY);
@@ -126,7 +137,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
             tasr_seg_next(&seg);
         }
     }
-    printf("ready: speak, the transcript prints after each pause\n");
+    printf("ready (%.2f s after boot): speak, the transcript prints after each pause\n", esp_timer_get_time() / 1e6);
     for (;;) {
         size_t got = xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY);
         const int n = tasr_seg_feed(&seg, in, (int)(got / 2));

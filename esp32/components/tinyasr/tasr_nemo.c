@@ -13,6 +13,12 @@
 #define WIN 400
 #define HOP 160
 #define NW 2
+// worker slots that get scratch buffers: one in single-core firmware (tasr_parallel never passes w = 1 there)
+#ifdef TASR_SINGLE_CORE
+#define NWA 1
+#else
+#define NWA NW
+#endif
 #define RB 64  // row block for position-wise sublayers
 
 #ifdef TASR_PROFILE
@@ -23,9 +29,10 @@ static inline uint32_t nts(void) { return esp_cpu_get_cycle_count(); }
 #include <time.h>
 static inline uint32_t nts(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint32_t)(t.tv_sec * 1000000000ull + t.tv_nsec); }
 #endif
-enum { N_FEAT, N_CONV0, N_IM2COL, N_CONV2, N_SUB, N_LN, N_GEMM, N_QUANT, N_ACT, N_QKV8, N_POS, N_ATT, N_DW, N_HEAD, N_NP };
+// N_DEC (CTC log-softmax + beam search + LM) is a part of N_HEAD, not an extra stage: leave it out of totals
+enum { N_FEAT, N_CONV0, N_IM2COL, N_CONV2, N_SUB, N_LN, N_GEMM, N_QUANT, N_ACT, N_QKV8, N_POS, N_ATT, N_DW, N_HEAD, N_DEC, N_NP };
 static const char *nprof_names[N_NP] = {"features", "conv0", "im2col", "gemm_fe", "gemm_k704", "layernorm", "gemm", "quant",
-                                        "act", "qkv_int8", "pos", "attention", "dwconv", "head+dec"};
+                                        "act", "qkv_int8", "pos", "attention", "dwconv", "head+dec", "(decoder)"};
 static uint64_t nprof[N_NP];
 #define NB(v) uint32_t v = nts()
 #define NE(v, c) nprof[c] += (uint32_t)(nts() - v)
@@ -51,6 +58,7 @@ typedef struct {
 
 struct tasr_nemo {
     int d, h, dh, dhp, ff, k, nl, sc, V, f1, f2;
+    int bits;  // encoder weight bits (4: the int4 unpack buffers are needed)
     const float *window;
     int mel_start[NMEL], mel_len[NMEL];
     float *mel_w;
@@ -116,6 +124,7 @@ tasr_nemo_t *tasr_nemo_load(const uint8_t *blob, size_t size)
     tasr_nemo_t *m = (tasr_nemo_t *)tasr_alloc(sizeof(tasr_nemo_t), 1);
     m->d = hd[1]; m->h = hd[2]; m->ff = hd[3]; m->k = hd[4]; m->nl = hd[5]; m->sc = hd[6]; m->V = hd[7];
     const int bits = hd[8];
+    m->bits = bits;
     m->flags = hd[10]; m->s_chunk = hd[11]; m->s_left = hd[12];
     m->dh = m->d / m->h;
     m->dhp = (m->dh + 15) & ~15;
@@ -336,6 +345,41 @@ static void layernorm_row(const float *r, int d, nln_t p, float *o)
     const float inv = 1.0f / sqrtf(var + 1e-5f);
     for (int i = 0; i < d; i++) o[i] = (r[i] - mean) * inv * p.g[i] + p.b[i];
 }
+// layernorm_row on rows a and b at once (two independent dependency chains for the in-order FPU; each row keeps its
+// own summation order), and the max |output| of each row (mx != NULL)
+static void layernorm_row2(const float *ra, const float *rb, int d, nln_t p, float *oa, float *ob, float *mx)
+{
+    float ma = 0.f, mb = 0.f;
+    for (int i = 0; i < d; i++) { ma += ra[i]; mb += rb[i]; }
+    ma /= (float)d;
+    mb /= (float)d;
+    float va = 0.f, vb = 0.f;
+    for (int i = 0; i < d; i++) {
+        const float ua = ra[i] - ma, ub = rb[i] - mb;
+        va += ua * ua;
+        vb += ub * ub;
+    }
+    va /= (float)d;
+    vb /= (float)d;
+    const float ia = 1.0f / sqrtf(va + 1e-5f), ib = 1.0f / sqrtf(vb + 1e-5f);
+    float xa = 0.f, xb = 0.f;
+    for (int i = 0; i < d; i++) {
+        const float ya = (ra[i] - ma) * ia * p.g[i] + p.b[i], yb = (rb[i] - mb) * ib * p.g[i] + p.b[i];
+        oa[i] = ya;
+        ob[i] = yb;
+        const float aa = fabsf(ya), ab = fabsf(yb);
+        xa = aa > xa ? aa : xa;
+        xb = ab > xb ? ab : xb;
+    }
+    if (mx) { mx[0] = xa; mx[1] = xb; }
+}
+static float layernorm_row_mx(const float *r, int d, nln_t p, float *o)
+{
+    layernorm_row(r, d, p, o);
+    float m = 0.f;
+    for (int i = 0; i < d; i++) { const float a = fabsf(o[i]); m = a > m ? a : m; }
+    return m;
+}
 
 // ------------------------------------------------------------------ work context
 typedef struct {
@@ -347,6 +391,8 @@ typedef struct {
     float *xs;                   // [RB]
     int8_t *wtmp[NW];
     int32_t *acc[NW];
+    float *rmw[NW];              // [RB] per-worker row max |y| of a fused GEMM output stage
+    float *rmx;                  // [RB] row max |x| of the rows about to be quantized (LN / GEMM output stage)
     // attention
     int8_t *qu, *qv, *k8, *vt, *p8;  // [h][T][dhp], [h][T][dhp], [h][T][dhp], [h][dh][Tp], [h][2T-1][dhp]
     float *squ, *sqv, *sk, *sv, *sp; // scales
@@ -364,11 +410,18 @@ typedef struct {
     int T;
     float *y;
     int ldy;
+    int ep;  // 0: plain output; 1: + row max into c->rmw[w]; 2: SiLU + row max
 } ngemm_t;
 static void ngemm_job(void *p, int b, int e, int w)
 {
     ngemm_t *j = (ngemm_t *)p;
     const int u = j->L->blocked ? 16 : 1;
+    if (j->ep) {
+        const tasr_ep_t ep = {j->ep == 2 ? nsig_tab : NULL, j->ep == 2 ? nsig_slope : NULL, j->c->rmw[w]};
+        tasr_qlin_range_ep(j->L, j->c->xq, j->c->xs, j->T, j->c->ldq, j->y, j->ldy, j->c->wtmp[w], j->c->acc[w], b * u,
+                           e * u, &ep);
+        return;
+    }
     const int8_t *xq = j->c->xq;
 #ifdef CONFIG_TASR_EXP_XQ_COPY
     if (w == 1 && j->c->xq1 && !j->L->blocked && j->L->kp > 256 && j->L->kp <= 1024) {
@@ -391,7 +444,7 @@ static void ngemm_rows_job(void *p, int b, int e, int w)
 static void nqlin(nctx_t *c, const tasr_qlin_t *L, int T, float *y, int ldy)
 {
     NB(t0);
-    ngemm_t j = {c, L, T, y, ldy};
+    ngemm_t j = {c, L, T, y, ldy, 0};
 #ifdef CONFIG_TASR_EXP_ROWSPLIT
     if (!L->blocked && L->bits == 8 && L->kp > 256 && L->kp <= 1024) {
         tasr_parallel(ngemm_rows_job, &j, T);
@@ -402,12 +455,35 @@ static void nqlin(nctx_t *c, const tasr_qlin_t *L, int T, float *y, int ldy)
     NPAR(L->blocked ? 11 : (L->bits == 8 && L->kp <= 256) ? 3 : L->kp > 1024 ? 10 : 9, ngemm_job, &j, L->blocked ? L->n / 16 : L->n);
     NE(t0, L->kp > 1024 ? N_CONV2 : L->kp > 256 ? N_SUB : N_GEMM);  // front-end GEMMs / long-K layers / K <= 256
 }
+// nqlin with SiLU applied in the GEMM's output stage (silu = 1), and the row max |y| left in c->rmx for nquant_mx, so
+// y is written once and read once instead of three writes / reads (SiLU pass, max pass, quantize pass)
+static void nqlin_ep(nctx_t *c, const tasr_qlin_t *L, int T, float *y, int ldy, int silu)
+{
+    NB(t0);
+    for (int w = 0; w < NWA; w++) memset(c->rmw[w], 0, sizeof(float) * T);
+    ngemm_t j = {c, L, T, y, ldy, silu ? 2 : 1};
+    NPAR(L->blocked ? 11 : (L->bits == 8 && L->kp <= 256) ? 3 : L->kp > 1024 ? 10 : 9, ngemm_job, &j, L->blocked ? L->n / 16 : L->n);
+    for (int t = 0; t < T; t++) {  // workers wrote disjoint outputs of the same rows: merge their maxima
+        float v = c->rmw[0][t];
+        for (int w = 1; w < NWA; w++) v = c->rmw[w][t] > v ? c->rmw[w][t] : v;
+        c->rmx[t] = v;
+    }
+    NE(t0, L->kp > 1024 ? N_CONV2 : L->kp > 256 ? N_SUB : N_GEMM);
+}
 static void nq_job(void *p, int b, int e, int w);
+typedef struct { const float *x; int K, ldx, kp; nctx_t *c; const float *mx; } nqj2_t;  // = nqj_t
 static void nquant(nctx_t *c, const float *x, int T, int K, int ldx, int kp)
 {
     NB(t0);
-    typedef struct { const float *x; int K, ldx, kp; nctx_t *c; } nqj2_t;
-    nqj2_t j = {x, K, ldx, kp, c};
+    nqj2_t j = {x, K, ldx, kp, c, NULL};
+    NPAR(4, nq_job, &j, T);
+    NE(t0, N_QUANT);
+}
+// nquant for rows whose max |x| is already known (mx[t], from layernorm / a GEMM output stage / the depthwise conv)
+static void nquant_mx(nctx_t *c, const float *x, int T, int K, int ldx, int kp, const float *mx)
+{
+    NB(t0);
+    nqj2_t j = {x, K, ldx, kp, c, mx};
     NPAR(4, nq_job, &j, T);
     NE(t0, N_QUANT);
 }
@@ -478,6 +554,7 @@ typedef struct {
     float *out;       // [T][d]
     const nlayer_t *L;
     int T, d, k;
+    float *mx;        // [T] max |out| per frame, or NULL
 } ndw_t;
 static void ndw_job(void *p, int b, int e, int w)
 {
@@ -500,8 +577,10 @@ static void ndw_job(void *p, int b, int e, int w)
             o[ch] = a0; o[ch + 1] = a1; o[ch + 2] = a2; o[ch + 3] = a3;
             o2[ch] = c0; o2[ch + 1] = c1; o2[ch + 2] = c2; o2[ch + 3] = c3;
         }
-        for (int ch = 0; ch < d; ch++) o[ch] = o[ch] * nsig(o[ch]);
-        for (int ch = 0; ch < d; ch++) o2[ch] = o2[ch] * nsig(o2[ch]);
+        float ma = 0.f, mb = 0.f;
+        for (int ch = 0; ch < d; ch++) { const float v = o[ch] * nsig(o[ch]); o[ch] = v; const float a = fabsf(v); ma = a > ma ? a : ma; }
+        for (int ch = 0; ch < d; ch++) { const float v = o2[ch] * nsig(o2[ch]); o2[ch] = v; const float a = fabsf(v); mb = a > mb ? a : mb; }
+        if (j->mx) { j->mx[t] = ma; j->mx[t + 1] = mb; }
     }
     for (; t < e; t++) {  // j->in has k/2 zero rows before frame 0 and after frame T-1
         float *o = j->out + (size_t)t * d;
@@ -514,7 +593,9 @@ static void ndw_job(void *p, int b, int e, int w)
             }
             o[ch] = a0; o[ch + 1] = a1; o[ch + 2] = a2; o[ch + 3] = a3;
         }
-        for (int ch = 0; ch < d; ch++) o[ch] = o[ch] * nsig(o[ch]);
+        float ma = 0.f;
+        for (int ch = 0; ch < d; ch++) { const float v = o[ch] * nsig(o[ch]); o[ch] = v; const float a = fabsf(v); ma = a > ma ? a : ma; }
+        if (j->mx) j->mx[t] = ma;
     }
 }
 
@@ -698,20 +779,30 @@ typedef struct {
     float *y;
     int d, ldx, ldy;
     nln_t p;
+    float *mx;  // [T] max |y| per row, or NULL
 } nlnj_t;
 static void nln_job(void *p, int b, int e, int w)
 {
     (void)w;
     nlnj_t *j = (nlnj_t *)p;
-    for (int t = b; t < e; t++) layernorm_row(j->x + (size_t)t * j->ldx, j->d, j->p, j->y + (size_t)t * j->ldy);
+    int t = b;
+    for (; t + 1 < e; t += 2)
+        layernorm_row2(j->x + (size_t)t * j->ldx, j->x + (size_t)(t + 1) * j->ldx, j->d, j->p, j->y + (size_t)t * j->ldy,
+                       j->y + (size_t)(t + 1) * j->ldy, j->mx ? j->mx + t : NULL);
+    for (; t < e; t++) {
+        if (j->mx) j->mx[t] = layernorm_row_mx(j->x + (size_t)t * j->ldx, j->d, j->p, j->y + (size_t)t * j->ldy);
+        else layernorm_row(j->x + (size_t)t * j->ldx, j->d, j->p, j->y + (size_t)t * j->ldy);
+    }
 }
-static void nln_rows(const float *x, int T, int d, nln_t p, float *y)
+// layernorm rows; with c != NULL also their max |y| in c->rmx (for nquant_mx)
+static void nln_rows_mx(nctx_t *c, const float *x, int T, int d, nln_t p, float *y)
 {
     NB(t0);
-    nlnj_t j = {x, y, d, d, d, p};
+    nlnj_t j = {x, y, d, d, d, p, c ? c->rmx : NULL};
     NPAR(1, nln_job, &j, T);
     NE(t0, N_LN);
 }
+static void nln_rows(const float *x, int T, int d, nln_t p, float *y) { nln_rows_mx(NULL, x, T, d, p, y); }
 static void nsilu_job(void *p, int b, int e, int w)
 {
     (void)w;
@@ -724,17 +815,17 @@ static void nsilu(float *x, int n)
     NPAR(2, nsilu_job, x, n);
     NE(t0, N_ACT);
 }
-typedef struct {
-    const float *x;
-    int K, ldx, kp;
-    nctx_t *c;
-} nqj_t;
+typedef nqj2_t nqj_t;
 static void nq_job(void *p, int b, int e, int w)
 {
     (void)w;
     nqj_t *j = (nqj_t *)p;
-    tasr_quant_rows(j->x + (size_t)b * j->ldx, e - b, j->K, j->ldx, j->c->xq + (size_t)b * j->c->ldq, j->c->ldq, j->kp,
-                    j->c->xs + b);
+    if (j->mx)
+        tasr_quant_rows_mx(j->x + (size_t)b * j->ldx, e - b, j->K, j->ldx, j->c->xq + (size_t)b * j->c->ldq, j->c->ldq, j->kp,
+                           j->c->xs + b, j->mx + b);
+    else
+        tasr_quant_rows(j->x + (size_t)b * j->ldx, e - b, j->K, j->ldx, j->c->xq + (size_t)b * j->c->ldq, j->c->ldq, j->kp,
+                        j->c->xs + b);
 }
 
 // ------------------------------------------------------------------ RNN-T greedy decoding
@@ -854,10 +945,12 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
 #endif
     C.xs = (float *)tasr_alloc(sizeof(float) * RB, 1);
     int8_t *xq_sub = (int8_t *)tasr_alloc((size_t)RB * m->sub.kp, 0);   // front-end projection rows (K = 3520)
-    for (int w = 0; w < NW; w++) {
-        C.wtmp[w] = (int8_t *)tasr_alloc(16 * C.ldq + 16, 1);
+    for (int w = 0; w < NWA; w++) {
+        if (m->bits == 4) C.wtmp[w] = (int8_t *)tasr_alloc(16 * C.ldq + 16, 1);  // int4 unpack tile (int8 layers need none)
         C.acc[w] = (int32_t *)tasr_alloc(sizeof(int32_t) * 64 * 16, 1);
+        C.rmw[w] = (float *)tasr_alloc(sizeof(float) * RB, 1);
     }
+    C.rmx = (float *)tasr_alloc(sizeof(float) * RB, 1);
     float *x = (float *)tasr_alloc(sizeof(float) * (size_t)T * d, 0);
     // ---- striding conv subsampling, pipelined over output frames
     {
@@ -993,7 +1086,7 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     C.sk = (float *)tasr_alloc(sizeof(float) * H * T, 0);
     C.sv = (float *)tasr_alloc(sizeof(float) * H * T, 0);
     C.sp = (float *)tasr_alloc(sizeof(float) * H * NP, 0);
-    for (int w = 0; w < NW; w++) {
+    for (int w = 0; w < NWA; w++) {
         C.sc[w] = (float *)tasr_alloc(sizeof(float) * C.Tp, 1);
         C.pq[w] = (int8_t *)tasr_alloc(C.Tp, 1);
         C.iacc_n = C.Tp > 64 ? C.Tp : 64;
@@ -1006,6 +1099,7 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     float *glb = (float *)tasr_alloc(sizeof(float) * (size_t)(T + 2 * halo) * d, 0);  // GLU outputs with zero halo
     float *gl = glb + (size_t)halo * d;
     float *cv = (float *)tasr_alloc(sizeof(float) * (size_t)T * d, 0);
+    float *cvmx = (float *)tasr_alloc(sizeof(float) * (size_t)T, 0);  // max |cv| per frame (depthwise conv output)
     C.att = cv;  // attention output is consumed by linear_out before the conv module writes cv
     float *prow = (float *)tasr_alloc(sizeof(float) * RB * d, 0);
     int8_t vtmp[64];
@@ -1014,15 +1108,13 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         // FF1 (half step), row blocks
         for (int t0 = 0; t0 < T; t0 += RB) {
             const int tn = T - t0 < RB ? T - t0 : RB;
-            nln_rows(x + (size_t)t0 * d, tn, d, L->n_ff1, hb);
+            nln_rows_mx(&C, x + (size_t)t0 * d, tn, d, L->n_ff1, hb);
             if (t0 == 0) ndbg("f1ln", li, hb, (size_t)tn * d);
-            nquant(&C, hb, tn, d, d, L->ff1_1.kp);
+            nquant_mx(&C, hb, tn, d, d, L->ff1_1.kp, C.rmx);
             if (t0 == 0) ndbg8("f1q", li, C.xq, tn, C.ldq, L->ff1_1.kp);
-            nqlin(&C, &L->ff1_1, tn, h2, m->ff);
-            if (t0 == 0) ndbg("f1a", li, h2, (size_t)tn * m->ff);
-            nsilu(h2, tn * m->ff);
+            nqlin_ep(&C, &L->ff1_1, tn, h2, m->ff, 1);  // + SiLU (no pre-SiLU "f1a" tensor any more)
             if (t0 == 0) ndbg("f1s", li, h2, (size_t)tn * m->ff);
-            nquant(&C, h2, tn, m->ff, m->ff, L->ff1_2.kp);
+            nquant_mx(&C, h2, tn, m->ff, m->ff, L->ff1_2.kp, C.rmx);
             if (t0 == 0) ndbg8("f1q2", li, C.xq, tn, C.ldq, L->ff1_2.kp);
             nqlin(&C, &L->ff1_2, tn, hb, d);
             if (t0 == 0) ndbg("f1b", li, hb, (size_t)tn * d);
@@ -1033,8 +1125,8 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         // MHSA: q/k/v for all frames (int8 per head), positional rows, then attention per head
         for (int t0 = 0; t0 < T; t0 += RB) {
             const int tn = T - t0 < RB ? T - t0 : RB;
-            nln_rows(x + (size_t)t0 * d, tn, d, L->n_att, hb);
-            nquant(&C, hb, tn, d, d, L->qkv.kp);
+            nln_rows_mx(&C, x + (size_t)t0 * d, tn, d, L->n_att, hb);
+            nquant_mx(&C, hb, tn, d, d, L->qkv.kp, C.rmx);
             nqlin(&C, &L->qkv, tn, h2, 3 * d);
             NB(tq8);
             for (int t = 0; t < tn; t++) {
@@ -1090,8 +1182,8 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         // conv module: LN -> pw1 -> GLU (all frames) -> dw k=31 (+BN) -> swish -> pw2
         for (int t0 = 0; t0 < T; t0 += RB) {
             const int tn = T - t0 < RB ? T - t0 : RB;
-            nln_rows(x + (size_t)t0 * d, tn, d, L->n_conv, hb);
-            nquant(&C, hb, tn, d, d, L->pw1.kp);
+            nln_rows_mx(&C, x + (size_t)t0 * d, tn, d, L->n_conv, hb);
+            nquant_mx(&C, hb, tn, d, d, L->pw1.kp, C.rmx);
             nqlin(&C, &L->pw1, tn, h2, 2 * d);
             for (int t = 0; t < tn; t++) {
                 const float *g = h2 + (size_t)t * 2 * d;
@@ -1101,13 +1193,13 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         }
         {
             NB(td);
-            ndw_t j = {glb, cv, L, T, d, m->k};
+            ndw_t j = {glb, cv, L, T, d, m->k, cvmx};
             NPAR(8, ndw_job, &j, T);
             NE(td, N_DW);
         }
         for (int t0 = 0; t0 < T; t0 += RB) {
             const int tn = T - t0 < RB ? T - t0 : RB;
-            nquant(&C, cv + (size_t)t0 * d, tn, d, d, L->pw2.kp);
+            nquant_mx(&C, cv + (size_t)t0 * d, tn, d, d, L->pw2.kp, cvmx + t0);
             nqlin(&C, &L->pw2, tn, hb, d);
             for (int i = 0; i < tn * d; i++) x[(size_t)t0 * d + i] += hb[i];
         }
@@ -1115,11 +1207,10 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         // FF2 (half step) + final LN
         for (int t0 = 0; t0 < T; t0 += RB) {
             const int tn = T - t0 < RB ? T - t0 : RB;
-            nln_rows(x + (size_t)t0 * d, tn, d, L->n_ff2, hb);
-            nquant(&C, hb, tn, d, d, L->ff2_1.kp);
-            nqlin(&C, &L->ff2_1, tn, h2, m->ff);
-            nsilu(h2, tn * m->ff);
-            nquant(&C, h2, tn, m->ff, m->ff, L->ff2_2.kp);
+            nln_rows_mx(&C, x + (size_t)t0 * d, tn, d, L->n_ff2, hb);
+            nquant_mx(&C, hb, tn, d, d, L->ff2_1.kp, C.rmx);
+            nqlin_ep(&C, &L->ff2_1, tn, h2, m->ff, 1);
+            nquant_mx(&C, h2, tn, m->ff, m->ff, L->ff2_2.kp, C.rmx);
             nqlin(&C, &L->ff2_2, tn, hb, d);
             for (int t = 0; t < tn; t++) {
                 float *r = x + (size_t)(t0 + t) * d;
@@ -1140,9 +1231,10 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         tasr_free(x); tasr_free(peq); tasr_free(pes); tasr_free(C.qu); tasr_free(C.qv); tasr_free(C.k8);
         tasr_free(C.vt); tasr_free(C.p8); tasr_free(C.squ); tasr_free(C.sqv); tasr_free(C.sk); tasr_free(C.sv);
         tasr_free(C.sp); tasr_free(hb); tasr_free(h2); tasr_free(glb); tasr_free(cv); tasr_free(prow);
-        tasr_free(C.xq); tasr_free(C.xs);
+        tasr_free(C.xq); tasr_free(C.xs); tasr_free(C.rmx); tasr_free(cvmx);
         for (int w = 0; w < NW; w++) {
             tasr_free(C.wtmp[w]); tasr_free(C.acc[w]); tasr_free(C.sc[w]); tasr_free(C.pq[w]); tasr_free(C.iacc[w]);
+            tasr_free(C.rmw[w]);
         }
         return T;
     }
@@ -1165,12 +1257,14 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
             float bv = l[0];
             for (int v = 1; v < V1; v++) if (l[v] > bv) { bv = l[v]; best = v; }
             if (dec) {
+                NB(tdc);
                 float z = 0.f;
                 for (int v = 0; v < V1; v++) z += expf(l[v] - bv);
                 const float lz = bv + logf(z);
                 lp[0] = l[m->V] - lz;
                 for (int v = 0; v < m->V; v++) lp[v + 1] = l[v] - lz;
                 tasr_decoder_step(dec, lp);
+                NE(tdc, N_DEC);
             } else if (best != prev && best != m->V && maxlen) {
                 const int nl = m->tok_len[best];
                 if (len + nl + 1 < maxlen) { memcpy(text + len, m->tok[best], nl); len += nl; text[len] = 0; }
@@ -1193,9 +1287,10 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     tasr_free(lg); tasr_free(lp); tasr_free(x); tasr_free(peq); tasr_free(pes); tasr_free(C.qu); tasr_free(C.qv); tasr_free(C.k8);
     tasr_free(C.vt); tasr_free(C.p8); tasr_free(C.squ); tasr_free(C.sqv); tasr_free(C.sk); tasr_free(C.sv);
     tasr_free(C.sp); tasr_free(hb); tasr_free(h2); tasr_free(glb); tasr_free(cv); tasr_free(prow);
-    tasr_free(C.xq); tasr_free(C.xs);
+    tasr_free(C.xq); tasr_free(C.xs); tasr_free(C.rmx); tasr_free(cvmx);
     for (int w = 0; w < NW; w++) {
         tasr_free(C.wtmp[w]); tasr_free(C.acc[w]); tasr_free(C.sc[w]); tasr_free(C.pq[w]); tasr_free(C.iacc[w]);
+        tasr_free(C.rmw[w]);
     }
     return T;
 }
@@ -1223,7 +1318,8 @@ struct tasr_nemo_stream {
     int8_t *vt;   // [layers][H][dh][Lcp]
     float *sv;    // [layers][H][Lc]
     float *gh;    // [layers][halo + C + halo][d] conv inputs: past rows, chunk rows, zeros
-    int kbase, nk;
+    int kbase, nk;  // absolute frame of cache row 0; rows in the caches
+    int kview;      // cache rows before the attention window (stale rows kept until the next slide)
     // front end
     int16_t ring[SRING];
     long n_samp;
@@ -1302,7 +1398,7 @@ static void satt_job(void *p, int b, int e, int w)
     satt_t *j = (satt_t *)p;
     struct tasr_nemo_stream *s = j->s;
     const tasr_nemo_t *m = s->m;
-    const int dh = m->dh, dhp = m->dhp, d = m->d, C = s->C, nkeys = s->nk;  // keys incl. this chunk
+    const int dh = m->dh, dhp = m->dhp, d = m->d, C = s->C, kv = s->kview, nkeys = s->nk - kv;  // window keys incl. this chunk
     const float scale = 1.0f / sqrtf((float)dh);
     const int kp16 = (nkeys + 15) & ~15;
     float *sc = s->scb[w];
@@ -1310,11 +1406,11 @@ static void satt_job(void *p, int b, int e, int w)
     int32_t *ia = s->ia[w], *ib = ia + s->ia_n;
     for (int hh = b; hh < e; hh++) {
         const size_t g = sidx(s, j->li, hh);
-        const int8_t *K = s->k8 + g * s->Lc * dhp, *VT = s->vt + g * dh * s->Lcp, *P = s->p8 + g * s->NP * dhp;
-        const float *sk = s->sk + g * s->Lc, *sv = s->sv + g * s->Lc, *spp = s->sp + g * s->NP;
+        const int8_t *K = s->k8 + (g * s->Lc + kv) * dhp, *VT = s->vt + g * dh * s->Lcp + kv, *P = s->p8 + g * s->NP * dhp;
+        const float *sk = s->sk + g * s->Lc + kv, *sv = s->sv + g * s->Lc + kv, *spp = s->sp + g * s->NP;
         for (int r = 0; r < j->n; r++) {
             const int i = s->t_chunk + r;
-            const int m0 = s->OMAX - i + s->kbase;  // positional row of key 0 (offset i - kbase)
+            const int m0 = s->OMAX - i + s->kbase + kv;  // positional row of the window's first key
             const int8_t *qu = s->qu + ((size_t)hh * C + r) * dhp, *qv = s->qv + ((size_t)hh * C + r) * dhp;
             if (dhp == 48) {
                 tasr_dot48_rows(qu, K, 48, nkeys, ia);
@@ -1368,12 +1464,14 @@ static void s_emit(struct tasr_nemo_stream *s, const float *l)
     float bv = l[0];
     for (int v = 1; v < V1; v++) if (l[v] > bv) { bv = l[v]; best = v; }
     if (s->dec) {
+        NB(tdc);
         float z = 0.f;
         for (int v = 0; v < V1; v++) z += expf(l[v] - bv);
         const float lz = bv + logf(z);
         s->lp[0] = l[m->V] - lz;
         for (int v = 0; v < m->V; v++) s->lp[v + 1] = l[v] - lz;
         tasr_decoder_step(s->dec, s->lp);
+        NE(tdc, N_DEC);
     } else if (best != s->prev && best != m->V) {
         const int nl = m->tok_len[best];
         if (s->len + nl + 1 < (int)sizeof(s->text)) { memcpy(s->text + s->len, m->tok[best], nl); s->len += nl; s->text[s->len] = 0; }
@@ -1387,10 +1485,11 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
 {
     const tasr_nemo_t *m = s->m;
     const int d = m->d, H = m->h, dh = m->dh, dhp = m->dhp, C = s->C, halo = s->halo;
-    // slide the caches: keep the previous nl chunks
+    // slide the caches to keep the previous nl chunks; with a spare chunk of rows (Lc > window) only when this chunk
+    // would not fit, else the stale rows stay in front of the window (kview) until the next slide
     const int base = s->t_chunk / C > s->nl ? (s->t_chunk / C - s->nl) * C : 0;
     const int sh = base - s->kbase;
-    if (sh > 0) {
+    if (sh > 0 && (s->Lc == (s->nl + 1) * C || s->nk + C > s->Lc)) {
         const int keep = s->nk - sh;
         for (int li = 0; li < m->nl; li++)
             for (int hh = 0; hh < H; hh++) {
@@ -1406,20 +1505,23 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
         s->kbase = base;
         s->nk = keep;
     }
+    s->kview = base - s->kbase;
     const int k0 = s->nk;  // cache row of this chunk's first frame
     float *x = s->x;
     int8_t vtmp[64];
     for (int li = 0; li < m->nl; li++) {
         const nlayer_t *L = &m->L[li];
         // FF1
-        nln_rows(x, n, d, L->n_ff1, s->hb);
-        s_qlin_rows(s, &L->ff1_1, s->hb, n, d, s->h2, m->ff);
-        nsilu(s->h2, n * m->ff);
-        s_qlin_rows(s, &L->ff1_2, s->h2, n, m->ff, s->hb, d);
+        nln_rows_mx(&s->W, x, n, d, L->n_ff1, s->hb);
+        nquant_mx(&s->W, s->hb, n, d, d, L->ff1_1.kp, s->W.rmx);
+        nqlin_ep(&s->W, &L->ff1_1, n, s->h2, m->ff, 1);  // + SiLU, row max for the next quantization
+        nquant_mx(&s->W, s->h2, n, m->ff, m->ff, L->ff1_2.kp, s->W.rmx);
+        nqlin(&s->W, &L->ff1_2, n, s->hb, d);
         for (int i = 0; i < n * d; i++) x[i] += 0.5f * s->hb[i];
         // MHSA: q (+u/+v) for the chunk, k/v appended to the cache
-        nln_rows(x, n, d, L->n_att, s->hb);
-        s_qlin_rows(s, &L->qkv, s->hb, n, d, s->h2, 3 * d);
+        nln_rows_mx(&s->W, x, n, d, L->n_att, s->hb);
+        nquant_mx(&s->W, s->hb, n, d, d, L->qkv.kp, s->W.rmx);
+        nqlin(&s->W, &L->qkv, n, s->h2, 3 * d);
         NB(tq8);
         for (int t = 0; t < n; t++) {
             const float *q = s->h2 + (size_t)t * 3 * d, *k = q + d, *v = q + 2 * d;
@@ -1449,8 +1551,9 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
         for (int i = 0; i < n * d; i++) x[i] += s->hb[i];
         // conv module: GLU rows after the cached past rows, zeros after the chunk
         float *gh = s->gh + (size_t)li * (2 * halo + C) * d;
-        nln_rows(x, n, d, L->n_conv, s->hb);
-        s_qlin_rows(s, &L->pw1, s->hb, n, d, s->h2, 2 * d);
+        nln_rows_mx(&s->W, x, n, d, L->n_conv, s->hb);
+        nquant_mx(&s->W, s->hb, n, d, d, L->pw1.kp, s->W.rmx);
+        nqlin(&s->W, &L->pw1, n, s->h2, 2 * d);
         for (int t = 0; t < n; t++) {
             const float *g = s->h2 + (size_t)t * 2 * d;
             float *o = gh + (size_t)(halo + t) * d;
@@ -1459,18 +1562,20 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
         memset(gh + (size_t)(halo + n) * d, 0, sizeof(float) * halo * d);
         {
             NB(td);
-            ndw_t jd = {gh, s->att, L, n, d, m->k};  // att is free again: use it for the conv output
+            ndw_t jd = {gh, s->att, L, n, d, m->k, s->W.rmx};  // att is free again: use it for the conv output
             tasr_parallel(ndw_job, &jd, n);
             NE(td, N_DW);
         }
         memmove(gh, gh + (size_t)n * d, sizeof(float) * halo * d);  // last halo inputs become the past rows
-        s_qlin_rows(s, &L->pw2, s->att, n, d, s->hb, d);
+        nquant_mx(&s->W, s->att, n, d, d, L->pw2.kp, s->W.rmx);
+        nqlin(&s->W, &L->pw2, n, s->hb, d);
         for (int i = 0; i < n * d; i++) x[i] += s->hb[i];
         // FF2 + final LN
-        nln_rows(x, n, d, L->n_ff2, s->hb);
-        s_qlin_rows(s, &L->ff2_1, s->hb, n, d, s->h2, m->ff);
-        nsilu(s->h2, n * m->ff);
-        s_qlin_rows(s, &L->ff2_2, s->h2, n, m->ff, s->hb, d);
+        nln_rows_mx(&s->W, x, n, d, L->n_ff2, s->hb);
+        nquant_mx(&s->W, s->hb, n, d, d, L->ff2_1.kp, s->W.rmx);
+        nqlin_ep(&s->W, &L->ff2_1, n, s->h2, m->ff, 1);  // + SiLU, row max for the next quantization
+        nquant_mx(&s->W, s->h2, n, m->ff, m->ff, L->ff2_2.kp, s->W.rmx);
+        nqlin(&s->W, &L->ff2_2, n, s->hb, d);
         for (int t = 0; t < n; t++) {
             float *r = x + (size_t)t * d;
             for (int i = 0; i < d; i++) r[i] += 0.5f * s->hb[(size_t)t * d + i];
@@ -1617,7 +1722,9 @@ tasr_nemo_stream_t *tasr_nemo_stream_new(const tasr_nemo_t *m, int chunk, int le
     if (s->C > RB) s->C = RB;
     const int lf = left > 0 ? left : (m->s_left > 0 ? m->s_left : 128);
     s->nl = (lf + s->C - 1) / s->C;
-    s->Lc = (s->nl + 1) * s->C;
+    // cache rows: the attention window (left context + this chunk), plus one spare chunk when a chunk is a multiple of
+    // 16 rows (window offsets then stay 16-byte aligned in vt), so the caches slide every other chunk (s_encode_chunk)
+    s->Lc = (s->nl + 1) * s->C + (s->C % 16 == 0 ? s->C : 0);
     s->Lcp = (s->Lc + 15) & ~15;
     s->OMAX = s->nl * s->C + s->C - 1;
     s->NP = s->OMAX + s->C;
@@ -1640,33 +1747,40 @@ tasr_nemo_stream_t *tasr_nemo_stream_new(const tasr_nemo_t *m, int chunk, int le
     s->fr = (float *)tasr_alloc(sizeof(float) * sc * f2, 0);
     s->xq_sub = (int8_t *)tasr_alloc((size_t)s->C * m->sub.kp, 0);
     s->xs_sub = (float *)tasr_alloc(sizeof(float) * RB, 1);
-    s->x = (float *)tasr_alloc(sizeof(float) * s->C * d, 0);
     s->W.m = m;
     s->W.ldq = m->ff > 2 * d ? m->ff : 2 * d;
-    s->W.xq = (int8_t *)tasr_alloc((size_t)RB * s->W.ldq, 1);
+    // work rows: one chunk (C <= RB); internal RAM in order of use per weight byte: xq, hb, then x and att
+    const size_t xqb = (size_t)s->C * s->W.ldq, xqp = (size_t)RB * m->L[0].pos.kp;  // (positional rows at creation)
+    s->W.xq = (int8_t *)tasr_alloc(xqb > xqp ? xqb : xqp, 1);
     s->W.xs = (float *)tasr_alloc(sizeof(float) * RB, 1);
-    for (int w = 0; w < NW; w++) {
-        s->W.wtmp[w] = (int8_t *)tasr_alloc(16 * s->W.ldq + 16, 1);
+    for (int w = 0; w < NWA; w++) {
+        if (m->bits == 4) s->W.wtmp[w] = (int8_t *)tasr_alloc(16 * s->W.ldq + 16, 1);
         s->W.acc[w] = (int32_t *)tasr_alloc(sizeof(int32_t) * 64 * 16, 1);
+        s->W.rmw[w] = (float *)tasr_alloc(sizeof(float) * RB, 1);
     }
-    s->hb = (float *)tasr_alloc(sizeof(float) * RB * d, 1);
+    s->W.rmx = (float *)tasr_alloc(sizeof(float) * RB, 1);
+    s->hb = (float *)tasr_alloc(sizeof(float) * s->C * d, 1);
+    s->x = (float *)tasr_alloc(sizeof(float) * s->C * d, 1);
+    s->att = (float *)tasr_alloc(sizeof(float) * s->C * d, 1);
     const int w2 = 3 * d > m->ff ? 3 * d : m->ff;
-    s->h2 = (float *)tasr_alloc(sizeof(float) * RB * w2, 0);
-    s->att = (float *)tasr_alloc(sizeof(float) * s->C * d, 0);
+    s->h2 = (float *)tasr_alloc(sizeof(float) * s->C * w2, 0);
     s->prow = (float *)tasr_alloc(sizeof(float) * RB * d, 0);
     s->qu = (int8_t *)tasr_alloc((size_t)H * s->C * dhp, 0);
     s->qv = (int8_t *)tasr_alloc((size_t)H * s->C * dhp, 0);
     s->squ = (float *)tasr_alloc(sizeof(float) * H * s->C, 0);
     s->sqv = (float *)tasr_alloc(sizeof(float) * H * s->C, 0);
     s->ia_n = s->Lcp > 64 ? s->Lcp : 64;
-    for (int w = 0; w < NW; w++) {
+    for (int w = 0; w < NWA; w++) {
         s->scb[w] = (float *)tasr_alloc(sizeof(float) * s->Lcp, 1);
         s->pq[w] = (int8_t *)tasr_alloc(s->Lcp, 1);
         s->ia[w] = (int32_t *)tasr_alloc(sizeof(int32_t) * 2 * s->ia_n, 1);
     }
     s->lg = (float *)tasr_alloc(sizeof(float) * s->C * (m->V + 1), 0);
     s->lp = (float *)tasr_alloc(sizeof(float) * (m->V + 1), 0);
-    if (!s->p8 || !s->k8 || !s->vt || !s->gh || !s->h2 || !s->lg || !s->W.xq) { tasr_nemo_stream_free(s); return NULL; }
+    if (!s->p8 || !s->k8 || !s->vt || !s->gh || !s->h2 || !s->lg || !s->W.xq || !s->x || !s->hb || !s->att) {
+        tasr_nemo_stream_free(s);
+        return NULL;
+    }
     // positional rows for offsets OMAX..-(C-1), int8 once, then every layer's linear_pos per head
     const int kpp = m->L[0].pos.kp;
     float *pe = (float *)tasr_alloc(sizeof(float) * RB * d, 0);
@@ -1704,7 +1818,7 @@ void tasr_nemo_stream_reset(tasr_nemo_stream_t *s)
     s->n_samp = 0;
     s->mel_t = s->c0_next = s->t2_next = s->finished = 0;
     s->T0 = s->T1 = s->T = 0;
-    s->nbat = s->nflat = s->t_chunk = s->kbase = s->nk = 0;
+    s->nbat = s->nflat = s->t_chunk = s->kbase = s->nk = s->kview = 0;
     s->prev = -1; s->len = 0; s->frames = 0; s->text[0] = 0;
     memset(s->gh, 0, sizeof(float) * m->nl * (2 * s->halo + s->C) * m->d);
     memset(s->vt, 0, (size_t)m->nl * m->h * m->dh * s->Lcp);
@@ -1775,11 +1889,12 @@ void tasr_nemo_stream_free(tasr_nemo_stream_t *s)
     if (!s) return;
     void *p[] = {s->p8, s->sp, s->k8, s->sk, s->vt, s->sv, s->gh, s->mel, s->c0ring, s->cmaxr, s->cmw, s->col, s->c2out,
                  s->fr, s->xq_sub, s->xs_sub, s->x, s->W.xq, s->W.xs, s->hb, s->h2, s->att, s->prow, s->qu, s->qv,
-                 s->squ, s->sqv, s->lg, s->lp};
+                 s->squ, s->sqv, s->lg, s->lp, s->W.rmx};
     for (size_t i = 0; i < sizeof(p) / sizeof(p[0]); i++) if (p[i]) tasr_free(p[i]);
     for (int w = 0; w < NW; w++) {
         if (s->W.wtmp[w]) tasr_free(s->W.wtmp[w]);
         if (s->W.acc[w]) tasr_free(s->W.acc[w]);
+        if (s->W.rmw[w]) tasr_free(s->W.rmw[w]);
         if (s->scb[w]) tasr_free(s->scb[w]);
         if (s->pq[w]) tasr_free(s->pq[w]);
         if (s->ia[w]) tasr_free(s->ia[w]);

@@ -31,6 +31,20 @@ menu "tinyasr"
             spoken, so the delay of the final text after the end of speech includes any backlog if the chip is slower
             than real time.
 
+    config TASR_KERNEL_BENCH
+        bool "Benchmark: at boot, time the int8 GEMM kernels with weights in internal RAM, PSRAM and flash"
+        default n
+        help
+            Prints KBENCH lines: cycles per multiply-accumulate for each placement. If PSRAM and flash are close to
+            internal RAM, the kernels are not waiting for weights.
+
+    config TASR_O3
+        bool "Compile the engine with -O3 -funroll-loops instead of -O2"
+        default y
+        help
+            Same results (no fast-math, fused multiply-add stays off). Measured on an N16R8 board: 2.3 % faster
+            than -O2 (real-time factor 1.833 against 1.877 on the oido_s3_bench clips).
+
     config TASR_EXP_NO_PSRAM_WEIGHTS
         bool "Experiment: keep all weights in flash (no copies in PSRAM)"
         default n

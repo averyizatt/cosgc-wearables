@@ -218,26 +218,91 @@ void tasr_unpack_s4(const uint8_t *src, int8_t *dst, int kp)
 }
 #endif
 
+// max |r[k]|: four running maxima (independent compare chains for the in-order FPU); the max of a set does not depend
+// on the grouping, so the result is the same as one sequential pass
+static inline float row_absmax(const float *r, int K)
+{
+    float m0 = 0.f, m1 = 0.f, m2 = 0.f, m3 = 0.f;
+    int k = 0;
+    for (; k + 4 <= K; k += 4) {
+        const float a = fabsf(r[k]), b = fabsf(r[k + 1]), c = fabsf(r[k + 2]), d = fabsf(r[k + 3]);
+        m0 = a > m0 ? a : m0; m1 = b > m1 ? b : m1; m2 = c > m2 ? c : m2; m3 = d > m3 ? d : m3;
+    }
+    for (; k < K; k++) { const float a = fabsf(r[k]); m0 = a > m0 ? a : m0; }
+    m0 = m1 > m0 ? m1 : m0;
+    m2 = m3 > m2 ? m3 : m2;
+    return m2 > m0 ? m2 : m0;
+}
+static inline void quant_row(const float *r, int K, int8_t *q, int kp, float m, float *xs)
+{
+    if (m < 1e-30f) m = 1e-30f;
+    const float inv = 127.0f / m;
+    int k = 0;
+    for (; k + 4 <= K; k += 4) {  // |r*inv| <= 127 by construction; four independent conversions per pass
+        const int a = rne(r[k] * inv), b = rne(r[k + 1] * inv), c = rne(r[k + 2] * inv), d = rne(r[k + 3] * inv);
+        q[k] = (int8_t)a; q[k + 1] = (int8_t)b; q[k + 2] = (int8_t)c; q[k + 3] = (int8_t)d;
+    }
+    for (; k < K; k++) q[k] = (int8_t)rne(r[k] * inv);
+    for (k = K; k < kp; k++) q[k] = 0;
+    *xs = m / 127.0f;
+}
 void tasr_quant_rows(const float *x, int T, int K, int ldx, int8_t *xq, int ldq, int kp, float *xs)
 {
     for (int t = 0; t < T; t++) {
         const float *r = x + (size_t)t * ldx;
-        int8_t *q = xq + (size_t)t * ldq;
-        float m = 0.f;
-        for (int k = 0; k < K; k++) {
-            float a = fabsf(r[k]);
-            m = a > m ? a : m;
+        quant_row(r, K, xq + (size_t)t * ldq, kp, row_absmax(r, K), xs + t);
+    }
+}
+void tasr_quant_rows_mx(const float *x, int T, int K, int ldx, int8_t *xq, int ldq, int kp, float *xs, const float *mx)
+{
+    for (int t = 0; t < T; t++) quant_row(x + (size_t)t * ldx, K, xq + (size_t)t * ldq, kp, mx[t], xs + t);
+}
+
+int tasr_xr_max_kp = 256;
+
+// SiLU sigmoid, the same table lookup as the engines' nsig()
+static inline float ep_sig(float x, const float *tab, const float *slope)
+{
+    const float u = (x + 12.0f) * 16.0f;
+    if (u <= 0.f) return 0.f;
+    if (u >= 384.f) return 1.f;
+    const int i = (int)u;
+    return tab[i] + (u - (float)i) * slope[i];
+}
+// output stage of one tile: y[t*ldy + j] = acc[t*lda + j] * xs[t] * sw[j] + bb[j] for t < tn, j < nb; then optionally
+// SiLU (sg != NULL) and the running row max |y| (rm != NULL). Without either it is the plain loop.
+static inline __attribute__((always_inline)) void qout(const int32_t *acc, int lda, int tn, int nb, const float *xs,
+                                                       const float *sw, const float *bb, float *y, int ldy,
+                                                       const float *sg, const float *ss, float *rm)
+{
+    if (!sg && !rm) {
+        for (int t = 0; t < tn; t++) {
+            float *yo = y + (size_t)t * ldy;
+            const int32_t *a = acc + (size_t)t * lda;
+            const float xst = xs[t];
+            for (int j = 0; j < nb; j++) yo[j] = (float)a[j] * xst * sw[j] + bb[j];
         }
-        if (m < 1e-30f) m = 1e-30f;
-        const float inv = 127.0f / m;
-        for (int k = 0; k < K; k++) q[k] = (int8_t)rne(r[k] * inv);  // |r*inv| <= 127 by construction
-        for (int k = K; k < kp; k++) q[k] = 0;
-        xs[t] = m / 127.0f;
+        return;
+    }
+    for (int t = 0; t < tn; t++) {
+        float *yo = y + (size_t)t * ldy;
+        const int32_t *a = acc + (size_t)t * lda;
+        const float xst = xs[t];
+        float m = rm ? rm[t] : 0.f;
+        for (int j = 0; j < nb; j++) {
+            float v = (float)a[j] * xst * sw[j] + bb[j];
+            if (sg) v = v * ep_sig(v, sg, ss);
+            yo[j] = v;
+            const float av = fabsf(v);
+            m = av > m ? av : m;
+        }
+        if (rm) rm[t] = m;
     }
 }
 
-void tasr_qlin_range(const tasr_qlin_t *L, const int8_t *xq, const float *xs, int T, int ldq, float *y, int ldy,
-                     int8_t *wtmp, int32_t *acc, int n0, int n1)
+static inline __attribute__((always_inline)) void qlin_body(const tasr_qlin_t *L, const int8_t *xq, const float *xs, int T,
+                                                            int ldq, float *y, int ldy, int8_t *wtmp, int32_t *acc, int n0,
+                                                            int n1, const float *sg, const float *ss, float *rm)
 {
     const int kp = L->kp;
     if (L->blocked) {
@@ -254,29 +319,19 @@ void tasr_qlin_range(const tasr_qlin_t *L, const int8_t *xq, const float *xs, in
                     tasr_gemm_blk16(wtmp + (size_t)ks * 16, kn, x0 + ks, ldq, tn, part);
                     for (int i = 0; i < tn * 16; i++) acc[i] += part[i];
                 }
-                for (int t = 0; t < tn; t++) {
-                    float *yo = y + (size_t)(t0 + t) * ldy + nb;
-                    const int32_t *a = acc + t * 16;
-                    const float xst = xs[t0 + t];
-                    for (int j = 0; j < 16; j++) yo[j] = (float)a[j] * xst * sw[j] + bb[j];
-                }
+                qout(acc, 16, tn, 16, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
     }
-    if (L->bits == 8 && kp <= 256) {  // x-stationary kernel (wins for short rows only), 16 outputs x 64 rows per tile
+    if (L->bits == 8 && kp <= tasr_xr_max_kp) {  // x-stationary kernel (short rows), 16 outputs x 64 rows per tile
         for (int nb0 = n0; nb0 < n1; nb0 += 16) {
             const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
             const float *sw = L->s + nb0, *bb = L->b + nb0;
             for (int t0 = 0; t0 < T; t0 += 64) {
                 const int tn = T - t0 < 64 ? T - t0 : 64;
                 tasr_gemm_s8_xr(L->w + (size_t)nb0 * kp, kp, nb, xq + (size_t)t0 * ldq, ldq, tn, acc);
-                for (int t = 0; t < tn; t++) {
-                    float *yo = y + (size_t)(t0 + t) * ldy + nb0;
-                    const int32_t *a = acc + t * nb;
-                    const float xst = xs[t0 + t];
-                    for (int j = 0; j < nb; j++) yo[j] = (float)a[j] * xst * sw[j] + bb[j];
-                }
+                qout(acc, nb, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
@@ -307,12 +362,7 @@ void tasr_qlin_range(const tasr_qlin_t *L, const int8_t *xq, const float *xs, in
                         for (int t = 0; t < tn; t++) acc[t * nb + j] += part[t];
                     }
                 }
-                for (int t = 0; t < tn; t++) {
-                    float *yo = y + (size_t)(t0 + t) * ldy + nb0;
-                    const int32_t *a = acc + t * nb;
-                    const float xst = xs[t0 + t];
-                    for (int j = 0; j < nb; j++) yo[j] = (float)a[j] * xst * sw[j] + bb[j];
-                }
+                qout(acc, nb, tn, nb, xs + t0, sw, bb, y + (size_t)t0 * ldy + nb0, ldy, sg, ss, rm ? rm + t0 : NULL);
             }
         }
         return;
@@ -334,9 +384,30 @@ void tasr_qlin_range(const tasr_qlin_t *L, const int8_t *xq, const float *xs, in
             const float sw = L->s[n], b = L->b[n];
             float *yo = y + (size_t)t0 * ldy + n;
             const float *xst = xs + t0;
-            for (int t = 0; t < tn; t++) yo[(size_t)t * ldy] = (float)acc[t] * xst[t] * sw + b;
+            if (!sg && !rm) {
+                for (int t = 0; t < tn; t++) yo[(size_t)t * ldy] = (float)acc[t] * xst[t] * sw + b;
+                continue;
+            }
+            float *rmt = rm ? rm + t0 : NULL;
+            for (int t = 0; t < tn; t++) {
+                float v = (float)acc[t] * xst[t] * sw + b;
+                if (sg) v = v * ep_sig(v, sg, ss);
+                yo[(size_t)t * ldy] = v;
+                if (rmt) { const float av = fabsf(v); rmt[t] = av > rmt[t] ? av : rmt[t]; }
+            }
         }
     }
+}
+void tasr_qlin_range(const tasr_qlin_t *L, const int8_t *xq, const float *xs, int T, int ldq, float *y, int ldy,
+                     int8_t *wtmp, int32_t *acc, int n0, int n1)
+{
+    qlin_body(L, xq, xs, T, ldq, y, ldy, wtmp, acc, n0, n1, NULL, NULL, NULL);
+}
+void tasr_qlin_range_ep(const tasr_qlin_t *L, const int8_t *xq, const float *xs, int T, int ldq, float *y, int ldy,
+                        int8_t *wtmp, int32_t *acc, int n0, int n1, const tasr_ep_t *ep)
+{
+    if (!ep) { qlin_body(L, xq, xs, T, ldq, y, ldy, wtmp, acc, n0, n1, NULL, NULL, NULL); return; }
+    qlin_body(L, xq, xs, T, ldq, y, ldy, wtmp, acc, n0, n1, ep->sig_tab, ep->sig_slope, ep->rmax);
 }
 
 void tasr_qlin(const tasr_qlin_t *L, const int8_t *xq, const float *xs, int T, int ldq, float *y, int ldy, int8_t *wtmp)

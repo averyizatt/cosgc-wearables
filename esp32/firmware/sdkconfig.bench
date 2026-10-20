@@ -1,0 +1,7 @@
+# Benchmark build (PlatformIO env oido_s3_bench): no mic; transcribes the clips flashed to the 'audio' partition
+# (esp32/tools/bench_clips.py), prints UTT / STREAM / PACED lines with the real-time factor, PROF lines (cycles per
+# stage) and KBENCH lines (kernel time with weights in internal RAM, PSRAM and flash).
+CONFIG_TASR_MODE_FILE=y
+# CONFIG_TASR_MODE_MIC is not set
+CONFIG_TASR_KERNEL_BENCH=y
+CONFIG_TASR_BENCH_PACED=y
