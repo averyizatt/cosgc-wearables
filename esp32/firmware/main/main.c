@@ -203,17 +203,21 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
         const char *ref = (const char *)(p + 8);
         const int16_t *pcm = (const int16_t *)(p + 8 + ((tl + 3) & ~3u));
         p = (const uint8_t *)(pcm + ns + (ns & 1));
+        double sec = ns / 16000.0;
+        tot_audio += sec;
+#ifdef CONFIG_TASR_BENCH_STREAM_ONLY
+        printf("REF: %.*s\n", (int)tl, ref);  // streaming passes only; TOTAL is the streaming RTF
+#else
         uint32_t c0 = esp_cpu_get_cycle_count();
         int64_t w0 = esp_timer_get_time();
         tasr_nemo_transcribe(m, pcm, ns, dec, text, sizeof(text), NULL, 0, NULL);
         const int64_t wall = esp_timer_get_time() - w0;  // 64-bit microseconds: the 32-bit cycle counter wraps every 17.9 s at 240 MHz
         uint32_t cyc = esp_cpu_get_cycle_count() - c0;
-        double sec = ns / 16000.0;
-        tot_audio += sec;
         tot_cycles += cyc;
         tot_wall += wall;
         printf("UTT %u | audio %.2fs | cycles %u | RTF %.3f | wall %lld us | RTF_wall %.3f\nREF: %.*s\nHYP: %s\n", (unsigned)u, sec,
                (unsigned)cyc, cyc / CPU_HZ / sec, (long long)wall, wall / 1e6 / sec, (int)tl, ref, text);
+#endif
         if (st) {  // the same audio arriving in 20 ms blocks; what matters is the compute left after the last block
             tasr_nemo_stream_reset(st);
             uint32_t s0 = esp_cpu_get_cycle_count();
@@ -226,6 +230,10 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
             int64_t sw2 = esp_timer_get_time();
             tot_fin += s2 - s1;
             tot_fin_wall += sw2 - sw1;
+#ifdef CONFIG_TASR_BENCH_STREAM_ONLY
+            tot_cycles += (double)(sw2 - sw0) * (CPU_HZ / 1e6);  // wall time: feed + finish can exceed the 32-bit counter
+            tot_wall += sw2 - sw0;
+#endif
             printf("STREAM %u | feed cycles %u | finish cycles %u (%.0f ms @240MHz) | RTF %.3f | feed wall %lld us | finish wall %lld us | RTF_wall %.3f\nSHYP: %s\n",
                    (unsigned)u, (unsigned)(s1 - s0), (unsigned)(s2 - s1), (s2 - s1) / CPU_HZ * 1000.0, (s2 - s0) / CPU_HZ / sec,
                    (long long)(sw1 - sw0), (long long)(sw2 - sw1), (sw2 - sw0) / 1e6 / sec, text);

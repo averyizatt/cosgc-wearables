@@ -1,0 +1,3 @@
+# Quick benchmark (env oido_s3_bench_stream; also used by oido_s3_bench_2c): streaming passes only, no kernel benchmark
+CONFIG_TASR_BENCH_STREAM_ONLY=y
+# CONFIG_TASR_KERNEL_BENCH is not set

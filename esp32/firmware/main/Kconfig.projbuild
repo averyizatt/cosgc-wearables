@@ -47,6 +47,10 @@ menu "tinyasr"
             spoken, so the delay of the final text after the end of speech includes any backlog if the chip is slower
             than real time.
 
+    config TASR_BENCH_STREAM_ONLY
+        bool "File mode: streaming passes only (no utterance-mode pass; TOTAL is the streaming RTF)"
+        default n
+
     config TASR_KERNEL_BENCH
         bool "Benchmark: at boot, time the int8 GEMM kernels with weights in internal RAM, PSRAM and flash"
         default n
