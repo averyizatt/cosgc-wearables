@@ -1,5 +1,4 @@
-# Two-core benchmark (env oido_s3_bench_2c): every parallel call site uses both cores except site 9, the int8
-# matrix products with 256 < K <= 1024 (the K=704 feed-forward outputs), which corrupt or crash on two cores (README).
+# experiment: all sites on both cores, LM parallel, rows <= 1024 on the x-stationary kernel (no row kernel)
 CONFIG_TASR_EXP_PAR_MASK_ON=y
-CONFIG_TASR_PAR_MASK=3583
-CONFIG_TASR_EXP_LM_SERIAL=y
+CONFIG_TASR_PAR_MASK=4095
+CONFIG_TASR_XR_MAX_KP=1024

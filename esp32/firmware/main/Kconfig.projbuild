@@ -67,6 +67,13 @@ menu "tinyasr"
         bool "Experiment: enable TASR_PAR_MASK"
         default n
 
+    config TASR_XR_MAX_KP
+        int "int8 rows of up to this many bytes use the x-stationary kernel, longer ones the row kernel"
+        default 256
+        help
+            1024 keeps tasr_dot_rows_s8 (the row kernel, which crashes when both cores run it) out of the K=704
+            and language-model GEMMs.
+
     config TASR_EXP_LM_SERIAL
         bool "Experiment (two cores): run the language model's matrix products on one core"
         default n

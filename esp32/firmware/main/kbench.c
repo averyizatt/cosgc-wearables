@@ -190,9 +190,10 @@ void run_kernel_bench(const uint8_t *flash, size_t flash_bytes)
         const struct { const int8_t *w, *x; const char *wn, *xn; } cs[] = {
             {wi, xi, "internal", "internal"}, {wp, xi, "PSRAM", "internal"}, {wf, xi, "flash", "internal"}, {wp, xp, "PSRAM", "PSRAM"}};
         // rows of <= 256 bytes normally use the x-stationary kernel; time the row kernel on them too (same results)
+        const int xr_saved = tasr_xr_max_kp;
         for (int kv = 0; kv < (k <= 256 ? 2 : 1); kv++)
         for (size_t c = 0; c < sizeof(cs) / sizeof(cs[0]); c++) {
-            tasr_xr_max_kp = kv ? 0 : 256;
+            tasr_xr_max_kp = kv ? 0 : (k <= 256 ? 256 : 0);
             const char *kn = k > 256 || kv ? "row" : "x-stat";
             if (!cs[c].w) { printf("KBENCH %s | weights %-8s: no room in internal RAM\n", shp[si].name, cs[c].wn); continue; }
             tasr_qlin_t L = {.n = n, .k = k, .kp = k, .bits = 8, .blocked = 0, .w = cs[c].w, .s = sw, .b = bb};
@@ -207,7 +208,7 @@ void run_kernel_bench(const uint8_t *flash, size_t flash_bytes)
                    shp[si].name, kn, cs[c].wn, cs[c].xn, (unsigned)best, (double)best / macs, wb / (best / 240e6) / 1e6,
                    (unsigned)fnv(y, (size_t)T * n));
         }
-        tasr_xr_max_kp = 256;
+        tasr_xr_max_kp = xr_saved;
         heap_caps_free(wi); heap_caps_free(wp); heap_caps_free(xi); heap_caps_free(xp); heap_caps_free(xs);
         heap_caps_free(sw); heap_caps_free(bb); heap_caps_free(acc); heap_caps_free(y);
     }
