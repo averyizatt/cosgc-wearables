@@ -1,0 +1,2 @@
+# PlatformIO builds from the repo root, so ESP-IDF looks for the partition table relative to it
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="esp32/firmware/partitions_nemo16lm.csv"

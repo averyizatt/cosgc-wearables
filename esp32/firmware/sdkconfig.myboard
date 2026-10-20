@@ -1,0 +1,18 @@
+# My board: ESP32-S3 N16R8 + INMP441 I2S mic + 0.96" SSD1306 I2C OLED. Live mic, transcript on serial and OLED.
+# Applied last by platformio.ini (repo root), so these win over the other sdkconfig.* files. Edit a pin here and rebuild.
+CONFIG_TASR_MODE_MIC=y
+# CONFIG_TASR_MODE_FILE is not set
+
+# INMP441 (VDD 3V3, GND GND, L/R GND)
+CONFIG_TASR_I2S_BCLK=4
+CONFIG_TASR_I2S_WS=5
+CONFIG_TASR_I2S_DIN=6
+
+# SSD1306 128x64 (VCC 3V3, GND GND). Some 0.96" boards are 0x3D instead of 0x3C (check the back of the module).
+CONFIG_TASR_OLED=y
+CONFIG_TASR_OLED_SDA=8
+CONFIG_TASR_OLED_SCL=9
+CONFIG_TASR_OLED_ADDR=0x3C
+
+# Pause that ends an utterance and prints its final line
+CONFIG_TASR_SEG_HANG_MS=800
