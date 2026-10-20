@@ -86,7 +86,11 @@ static void par_for(tasr_job_fn fn, void *ctx, int n)
 #endif
 #define CPU_HZ 240000000.0
 
-#define INTERNAL_RESERVE (72 * 1024)  // keep internal RAM for I2S DMA, Wi-Fi/BLE stacks, task stacks
+// internal RAM kept free when the engine asks for a hot work buffer: I2S DMA, the mic / OLED task stacks and their
+// buffers are allocated before the engine's buffers, so this only needs to cover later runtime allocations. A Wi-Fi or
+// BLE stack needs much more (raise this to ~72 KB, which costs speed: the utterance path's 45 KB activation tile then
+// lands in PSRAM, measured 4 % slower).
+#define INTERNAL_RESERVE (32 * 1024)
 static void *fw_alloc(size_t n, int kind)
 {
     void *p = NULL;

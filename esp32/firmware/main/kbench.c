@@ -75,9 +75,93 @@ static void pie_bench(void)
     }
 }
 
+// one GEMM shape with model-like int8 data (bell shaped, mostly |v| < 64): broadcast kernel on / off, weights in
+// internal RAM (when they fit) and PSRAM, outputs in PSRAM
+static void bench_ml(int n, int k, int T, const char *name)
+{
+    const size_t wb = (size_t)n * k;
+    const double macs = (double)wb * T;
+    int8_t *w[2] = {wb <= 130000 ? heap_caps_aligned_alloc(16, wb, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : NULL,
+                    heap_caps_aligned_alloc(16, wb, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)};
+    int8_t *x = heap_caps_aligned_alloc(16, (size_t)T * k, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    float *xs = heap_caps_malloc(sizeof(float) * T, MALLOC_CAP_INTERNAL), *sw = heap_caps_malloc(sizeof(float) * n, MALLOC_CAP_SPIRAM);
+    float *bb = heap_caps_malloc(sizeof(float) * n, MALLOC_CAP_SPIRAM);
+    int32_t *acc = heap_caps_aligned_alloc(16, sizeof(int32_t) * 64 * 16, MALLOC_CAP_INTERNAL);
+    float *y = heap_caps_aligned_alloc(16, sizeof(float) * T * n, MALLOC_CAP_SPIRAM);
+    if (!w[1] || !x || !xs || !sw || !bb || !acc || !y) { printf("KBENCH %s: allocation failed\n", name); goto out; }
+    uint32_t r = 777;
+    for (size_t i = 0; i < wb; i++) {
+        int s = 0;
+        for (int q = 0; q < 4; q++) { r = r * 1103515245u + 12345u; s += (int)(r >> 24) - 128; }
+        w[1][i] = (int8_t)(s / 8);
+    }
+    if (w[0]) memcpy(w[0], w[1], wb);
+    for (int i = 0; i < T * k; i++) {
+        int s = 0;
+        for (int q = 0; q < 4; q++) { r = r * 1103515245u + 12345u; s += (int)(r >> 24) - 128; }
+        x[i] = (int8_t)(s / 8);
+    }
+    for (int t = 0; t < T; t++) xs[t] = 1e-3f;
+    for (int j = 0; j < n; j++) { sw[j] = 1e-2f; bb[j] = 0.f; }
+    for (int pl = 0; pl < 2; pl++) {
+        if (!w[pl]) continue;
+        tasr_qlin_t L = {.n = n, .k = k, .kp = k, .bits = 8, .blocked = 0, .w = w[pl], .s = sw, .b = bb};
+        L.wn2 = tasr_qlin_norms(&L);
+        for (int e = 0; e < 2; e++) {
+            tasr_xt_enable = e;
+            uint32_t best = UINT32_MAX;
+            for (int rep = 0; rep < 3; rep++) {
+                const uint32_t c0 = esp_cpu_get_cycle_count();
+                tasr_qlin_range(&L, x, xs, T, k, y, n, NULL, acc, 0, n);
+                const uint32_t dc = esp_cpu_get_cycle_count() - c0;
+                if (dc < best) best = dc;
+            }
+            printf("KBENCH %-22s %2d rows | %-9s | weights %-8s | %9u cycles | %.3f cycles/MAC | y %08x\n", name, T,
+                   e ? "broadcast" : "old", pl ? "PSRAM" : "internal", (unsigned)best, best / macs, (unsigned)fnv(y, (size_t)T * n));
+        }
+        tasr_xt_enable = 1;
+        heap_caps_free((void *)L.wn2);
+    }
+out:
+    heap_caps_free(w[0]); heap_caps_free(w[1]); heap_caps_free(x); heap_caps_free(xs); heap_caps_free(sw);
+    heap_caps_free(bb); heap_caps_free(acc); heap_caps_free(y);
+}
+
+static void bench_blk(void)  // tasr_gemm_blk16 alone on a 256-byte chunk: weight row stride and placement
+{
+    static int8_t tile[256 * 16 + 64] __attribute__((aligned(16)));
+    static int32_t out[16 * 16];
+    int8_t *wi = heap_caps_aligned_alloc(16, 16 * 704, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int8_t *wp = heap_caps_aligned_alloc(16, 16 * 704 * 64, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!wi || !wp) return;
+    memset(wi, 1, 16 * 704);
+    memset(wp, 1, 16 * 704 * 64);
+    const struct { int8_t *w; int ld; const char *n; } cs[] = {{wi, 256, "internal, stride 256"}, {wi, 704, "internal, stride 704"},
+                                                              {wp, 256, "PSRAM, stride 256"}, {wp, 704, "PSRAM, stride 704"}};
+    for (size_t c = 0; c < 4; c++) {
+        uint32_t best = UINT32_MAX;
+        for (int rep = 0; rep < 3; rep++) {
+            const uint32_t c0 = esp_cpu_get_cycle_count();
+            for (int i = 0; i < 16; i++) tasr_gemm_blk16(tile, 256, cs[c].w + (cs[c].w == wp ? (size_t)i * 16 * 704 : 0), cs[c].ld, 16, out);
+            const uint32_t dc = esp_cpu_get_cycle_count() - c0;
+            if (dc < best) best = dc;
+        }
+        printf("PIE blk16 kn=256, 16 weight rows (%s): %.1f cycles per weight row\n", cs[c].n, best / 256.0);
+    }
+    heap_caps_free(wi);
+    heap_caps_free(wp);
+}
+
 void run_kernel_bench(const uint8_t *flash, size_t flash_bytes)
 {
     pie_bench();
+    bench_blk();
+    bench_ml(704, 176, 64, "K=176 x 704 (ff*_1)");
+    bench_ml(176, 176, 64, "K=176 x 176 (out)");
+    bench_ml(176, 704, 64, "K=704 x 176 (ff*_2)");
+    bench_ml(176, 704, 32, "K=704 x 176 (ff*_2)");
+    bench_ml(176, 1584, 60, "K=1584 x 176 (conv2)");
+    bench_ml(176, 3520, 32, "K=3520 x 176 (sub)");
     static const struct { int n, k; const char *name; } shp[] = {{176, 704, "K=704 x 176 (ff*_2)"}, {704, 176, "K=176 x 704 (ff*_1)"}};
     const int T = 64;
     printf("KBENCH int8 GEMM, %d rows, min of 3 runs at 240 MHz\n", T);

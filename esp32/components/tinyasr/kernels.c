@@ -262,43 +262,55 @@ void tasr_quant_rows_mx(const float *x, int T, int K, int ldx, int8_t *xq, int l
 int tasr_xr_max_kp = 256;
 int tasr_xt_enable = 1;
 
-// ---- broadcast int8 kernel for short rows: tasr_gemm_blk16 with the roles swapped. The 16 QACC lanes hold 16
-// activation rows (transposed tile xT[k][16]), and each weight byte is broadcast: one instruction per 16 MACs, against
-// the x-stationary kernel's ~2. The lanes are 20 bits wide, so a group is only run this way when Cauchy-Schwarz proves
-// that no partial sum can leave [-2^19, 2^19): max |x_t|^2 * max |w_j|^2 < (2^19 - 1)^2. Then every sum is exact and
-// identical to the x-stationary kernel's; groups that fail the test (about 1-11 %) use that kernel instead.
+// ---- broadcast int8 kernel: tasr_gemm_blk16 with the roles swapped. The 16 QACC lanes hold 16 activation rows
+// (transposed tile xT[k][16]), and each weight byte is broadcast: one instruction per 16 MACs, against ~2 for the
+// the x-stationary kernel, for int8 rows of kp <= XT_KC. The lanes are 20 bits wide, so a 16-row x 16-output block is
+// only run this way when Cauchy-Schwarz proves that no partial sum can leave [-2^19, 2^19):
+// max |x_t|^2 * max |w_j|^2 < (2^19 - 1)^2. Then every sum is exact and identical to the x-stationary kernel's; blocks
+// that fail the test (1-11 %, most in nemo8) use that kernel. Longer rows stay on the row kernel: cut into chunks they
+// were 2x slower on the board, because weight rows read 256 bytes at a time at the row stride defeat the PSRAM / flash
+// streaming that the row kernel gets from reading each row end to end (a chunk-major weight layout would fix that).
 #define XT_LIM (524287ull * 524287ull)
+#define XT_KC 256
 const uint16_t *tasr_qlin_norms(const tasr_qlin_t *L)
 {
-    if (L->bits != 8 || L->blocked || L->kp > 256) return NULL;
+    if (L->bits != 8 || L->blocked || L->kp > XT_KC) return NULL;
     uint16_t *q = (uint16_t *)tasr_alloc(sizeof(uint16_t) * L->n, 0);
     if (!q) return NULL;
     for (int j = 0; j < L->n; j++) {
         const int8_t *w = L->w + (size_t)j * L->kp;
-        uint32_t s = 0;
-        for (int k = 0; k < L->kp; k++) s += (uint32_t)(w[k] * w[k]);
-        q[j] = (uint16_t)((s + 127) / 128);  // rounded up (the bound stays safe); <= 256 * 128^2 / 128 = 32768
+        const uint32_t s = (uint32_t)tasr_dot_s8(w, w, L->kp);  // <= 256 * 128^2: no overflow
+        q[j] = (uint16_t)((s + 127) / 128);  // rounded up (the bound stays safe); <= 32768
     }
     return q;
 }
-// x rows [0, tn) -> 16-row groups xt[g * kp + k * 16 + r] = x[g + r][k] (rows past tn zero); xn[t] = |x_t|^2
-static void build_xt(const int8_t *x, int ldq, int tn, int kp, int8_t *xt, int32_t *xn)
+typedef uint32_t __attribute__((may_alias, aligned(4))) tasr_u32a;  // aligned word access to int8 rows (l32i / s32i)
+static inline uint32_t ld32(const int8_t *p) { return *(const tasr_u32a *)p; }
+static inline void st32(int8_t *p, uint32_t v) { *(tasr_u32a *)p = v; }
+static const int8_t k_zero_row[XT_KC] __attribute__((aligned(16)));
+// columns [0, kn) of x rows [0, tn) -> 16-row groups xt[g * kn + k * 16 + r] = x[g + r][k] (rows past tn zero), as
+// 4 x 4 byte blocks with 32-bit loads and stores; xn[t] = |x_t|^2 over those columns (PIE dot product)
+static void build_xt(const int8_t *x, int ldq, int tn, int kn, int8_t *xt, int32_t *xn)
 {
     for (int g = 0; g < tn; g += 16) {
-        int8_t *o = xt + (size_t)g * kp;
-        for (int r = 0; r < 16; r++) {
-            if (g + r >= tn) {
-                for (int k = 0; k < kp; k++) o[k * 16 + r] = 0;
-                continue;
+        int8_t *o = xt + (size_t)g * kn;
+        for (int r0 = 0; r0 < 16; r0 += 4) {
+            const int8_t *p[4];
+            for (int i = 0; i < 4; i++) {
+                const int t = g + r0 + i;
+                p[i] = t < tn ? x + (size_t)t * ldq : k_zero_row;
+                if (t < tn) xn[t] = tasr_dot_s8(p[i], p[i], kn);
             }
-            const int8_t *xr = x + (size_t)(g + r) * ldq;
-            int32_t s = 0;
-            for (int k = 0; k < kp; k++) {
-                const int v = xr[k];
-                o[k * 16 + r] = (int8_t)v;
-                s += v * v;
+            for (int k = 0; k < kn; k += 4) {  // a = a0 a1 a2 a3 (bytes, low first) ... -> k: a0 b0 c0 d0, k+1: a1 b1 c1 d1, ...
+                const uint32_t a = ld32(p[0] + k), b = ld32(p[1] + k), c = ld32(p[2] + k), d = ld32(p[3] + k);
+                const uint32_t ab02 = (a & 0x00ff00ffu) | ((b << 8) & 0xff00ff00u), ab13 = ((a >> 8) & 0x00ff00ffu) | (b & 0xff00ff00u);
+                const uint32_t cd02 = (c & 0x00ff00ffu) | ((d << 8) & 0xff00ff00u), cd13 = ((c >> 8) & 0x00ff00ffu) | (d & 0xff00ff00u);
+                int8_t *q = o + (size_t)k * 16 + r0;
+                st32(q, (ab02 & 0xffffu) | (cd02 << 16));
+                st32(q + 16, (ab13 & 0xffffu) | (cd13 << 16));
+                st32(q + 32, (ab02 >> 16) | (cd02 & 0xffff0000u));
+                st32(q + 48, (ab13 >> 16) | (cd13 & 0xffff0000u));
             }
-            xn[g + r] = s;
         }
     }
 }
@@ -385,37 +397,37 @@ static inline __attribute__((always_inline)) void qlin_body(const tasr_qlin_t *L
         }
         return;
     }
-    if (L->bits == 8 && kp <= tasr_xr_max_kp) {
-        int8_t *xt = tasr_xt_enable && L->wn2 && kp <= 256 && T >= 8 ? xt_scratch() : NULL;
-        if (xt) {  // broadcast kernel on 16-row groups where the bound allows, the x-stationary kernel elsewhere
-            int32_t xn[64];
-            for (int t0 = 0; t0 < T; t0 += 64) {
-                const int tn = T - t0 < 64 ? T - t0 : 64;
-                const int8_t *x0 = xq + (size_t)t0 * ldq;
-                build_xt(x0, ldq, tn, kp, xt, xn);
-                for (int nb0 = n0; nb0 < n1; nb0 += 16) {  // the block's 16 weight rows stay in cache over the groups
-                    const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
-                    const float *sw = L->s + nb0, *bb = L->b + nb0;
-                    const int8_t *wb = L->w + (size_t)nb0 * kp;
-                    uint32_t wm = 0;
-                    for (int j = 0; j < nb; j++) wm = L->wn2[nb0 + j] > wm ? L->wn2[nb0 + j] : wm;
-                    for (int g = 0; g < tn; g += 16) {
-                        const int rn = tn - g < 16 ? tn - g : 16;
-                        uint32_t xm = 0;
-                        for (int r = 0; r < rn; r++) xm = (uint32_t)xn[g + r] > xm ? (uint32_t)xn[g + r] : xm;
-                        float *yo = y + (size_t)(t0 + g) * ldy + nb0, *rmg = rm ? rm + t0 + g : NULL;
-                        if (rn >= 8 && (uint64_t)xm * wm * 128u < XT_LIM) {
-                            tasr_gemm_blk16(xt + (size_t)g * kp, kp, wb, kp, nb, acc);  // acc[j * 16 + r]
-                            qout(acc, 1, 16, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
-                        } else {
-                            tasr_gemm_s8_xr(wb, kp, nb, x0 + (size_t)g * ldq, ldq, rn, acc);  // acc[r * nb + j]
-                            qout(acc, nb, 1, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
-                        }
+    int8_t *xt = L->bits == 8 && L->wn2 && tasr_xt_enable && kp <= XT_KC && T >= 8 ? xt_scratch() : NULL;
+    if (xt) {  // broadcast kernel (see tasr_qlin_norms) on 16-row groups x 16-output blocks, x-stationary elsewhere
+        int32_t xn[64];
+        for (int t0 = 0; t0 < T; t0 += 64) {
+            const int tn = T - t0 < 64 ? T - t0 : 64;
+            const int8_t *x0 = xq + (size_t)t0 * ldq;
+            build_xt(x0, ldq, tn, kp, xt, xn);
+            for (int nb0 = n0; nb0 < n1; nb0 += 16) {  // the block's 16 weight rows stay in cache over the groups
+                const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
+                const float *sw = L->s + nb0, *bb = L->b + nb0;
+                const int8_t *wb = L->w + (size_t)nb0 * kp;
+                uint32_t wm = 0;
+                for (int j = 0; j < nb; j++) wm = L->wn2[nb0 + j] > wm ? L->wn2[nb0 + j] : wm;
+                for (int g = 0; g < tn; g += 16) {
+                    const int rn = tn - g < 16 ? tn - g : 16;
+                    uint32_t xm = 0;
+                    for (int r = 0; r < rn; r++) xm = (uint32_t)xn[g + r] > xm ? (uint32_t)xn[g + r] : xm;
+                    float *yo = y + (size_t)(t0 + g) * ldy + nb0, *rmg = rm ? rm + t0 + g : NULL;
+                    if (rn >= 8 && (uint64_t)xm * wm * 128u < XT_LIM) {
+                        tasr_gemm_blk16(xt + (size_t)g * kp, kp, wb, kp, nb, acc);  // acc[j * 16 + r]
+                        qout(acc, 1, 16, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
+                    } else {  // the bound does not hold: the x-stationary kernel, same sums
+                        tasr_gemm_s8_xr(wb, kp, nb, x0 + (size_t)g * ldq, ldq, rn, acc);  // acc[r * nb + j]
+                        qout(acc, nb, 1, rn, nb, xs + t0 + g, sw, bb, yo, ldy, sg, ss, rmg);
                     }
                 }
             }
-            return;
         }
+        return;
+    }
+    if (L->bits == 8 && kp <= tasr_xr_max_kp) {
         // x-stationary kernel (short rows), 16 outputs x 64 rows per tile
         for (int nb0 = n0; nb0 < n1; nb0 += 16) {
             const int nb = n1 - nb0 < 16 ? n1 - nb0 : 16;
