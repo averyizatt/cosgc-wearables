@@ -490,9 +490,10 @@ static void nquant_mx(nctx_t *c, const float *x, int T, int K, int ldx, int kp, 
     NE(t0, N_QUANT);
 }
 
-// ------------------------------------------------------------------ attention job (per head)
+// ------------------------------------------------------------------ attention job (query rows of one head)
 typedef struct {
     nctx_t *c;
+    int hh;
 } natt_t;
 static void natt_job(void *p, int b, int e, int w)
 {
@@ -503,12 +504,13 @@ static void natt_job(void *p, int b, int e, int w)
     float *sc = c->sc[w];
     int8_t *pq = c->pq[w];
     int32_t *ia = c->iacc[w];
-    for (int hh = b; hh < e; hh++) {
+    {
+        const int hh = ((natt_t *)p)->hh;
         const int8_t *K = c->k8 + (size_t)hh * T * dhp;
         const int8_t *P = c->p8 + (size_t)hh * (2 * T - 1) * dhp;
         const int8_t *VT = c->vt + (size_t)hh * dh * c->Tp;
         const float *sk = c->sk + (size_t)hh * T, *sv = c->sv + (size_t)hh * T, *sp = c->sp + (size_t)hh * (2 * T - 1);
-        for (int i = 0; i < T; i++) {
+        for (int i = b; i < e; i++) {
             const int8_t *qu = c->qu + ((size_t)hh * T + i) * dhp, *qv = c->qv + ((size_t)hh * T + i) * dhp;
             const float squ = c->squ[hh * T + i], sqv = c->sqv[hh * T + i];
             int32_t *ib = ia + c->iacc_n;
@@ -1193,8 +1195,10 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         }
         {
             NB(ta);
-            natt_t aj = {&C};
-            NPAR(7, natt_job, &aj, H);
+            for (int hh = 0; hh < H; hh++) {  // a head's query rows on both cores: they share its K / V / P rows in cache
+                natt_t aj = {&C, hh};
+                NPAR(7, natt_job, &aj, T);
+            }
             NE(ta, N_ATT);
         }
         for (int t0 = 0; t0 < T; t0 += RB) {
@@ -1413,10 +1417,10 @@ static void smel_job(void *p, int b, int e, int w)
     }
 }
 
-// ---- attention for the n rows of a chunk (job over heads)
+// ---- attention for the n rows of a chunk (job over the rows of one head)
 typedef struct {
     struct tasr_nemo_stream *s;
-    int li, n;
+    int li, n, hh;
 } satt_t;
 static void satt_job(void *p, int b, int e, int w)
 {
@@ -1429,11 +1433,12 @@ static void satt_job(void *p, int b, int e, int w)
     float *sc = s->scb[w];
     int8_t *pq = s->pq[w];
     int32_t *ia = s->ia[w], *ib = ia + s->ia_n;
-    for (int hh = b; hh < e; hh++) {
+    {
+        const int hh = j->hh;
         const size_t g = sidx(s, j->li, hh);
         const int8_t *K = s->k8 + (g * s->Lc + kv) * dhp, *VT = s->vt + g * dh * s->Lcp + kv, *P = s->p8 + g * s->NP * dhp;
         const float *sk = s->sk + g * s->Lc + kv, *sv = s->sv + g * s->Lc + kv, *spp = s->sp + g * s->NP;
-        for (int r = 0; r < j->n; r++) {
+        for (int r = b; r < e; r++) {
             const int i = s->t_chunk + r;
             const int m0 = s->OMAX - i + s->kbase + kv;  // positional row of the window's first key
             const int8_t *qu = s->qu + ((size_t)hh * C + r) * dhp, *qv = s->qv + ((size_t)hh * C + r) * dhp;
@@ -1567,8 +1572,10 @@ static void s_encode_chunk(struct tasr_nemo_stream *s, int n)
             const int nk_save = s->nk;
             s->nk = k0 + n;
             NB(ta);
-            satt_t aj = {s, li, n};
-            NPAR(7, satt_job, &aj, H);
+            for (int hh = 0; hh < H; hh++) {  // a head's rows on both cores: they share its caches in the data cache
+                satt_t aj = {s, li, n, hh};
+                NPAR(7, satt_job, &aj, n);
+            }
             NE(ta, N_ATT);
             s->nk = nk_save;
         }
