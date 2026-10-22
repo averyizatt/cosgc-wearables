@@ -4,6 +4,7 @@
 #include <string.h>
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
@@ -93,6 +94,7 @@ static void par_for(tasr_job_fn fn, void *ctx, int n)
 // BLE stack needs much more (raise this to ~72 KB, which costs speed: the utterance path's 45 KB activation tile then
 // lands in PSRAM, measured 4 % slower).
 #define INTERNAL_RESERVE (32 * 1024)
+static uintptr_t g_ps_lo = UINTPTR_MAX, g_ps_hi;  // span of the PSRAM blocks handed out (prefetch window)
 static void *fw_alloc(size_t n, int kind)
 {
     void *p = NULL;
@@ -108,6 +110,10 @@ static void *fw_alloc(size_t n, int kind)
         }
     }
     if (!p) p = heap_caps_aligned_alloc(16, n ? n : 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p && esp_ptr_external_ram(p)) {
+        if ((uintptr_t)p < g_ps_lo) g_ps_lo = (uintptr_t)p;
+        if ((uintptr_t)p + n > g_ps_hi) g_ps_hi = (uintptr_t)p + n;
+    }
     if (p) memset(p, 0, n);
     else ESP_LOGE(TAG, "alloc %u kind %d failed", (unsigned)n, kind);
     return p;
@@ -180,6 +186,10 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     budget = 0;
 #endif
     size_t moved = tasr_nemo_place_weights(m, budget);
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+    extern void dcache_autoload_psram(uintptr_t lo, uintptr_t hi);
+    if (moved && g_ps_hi > g_ps_lo) dcache_autoload_psram(g_ps_lo, g_ps_hi);  // the weights copied to PSRAM
+#endif
     ESP_LOGI(TAG, "NeMo conformer-ctc-small: %u weight bytes, %u moved to PSRAM | free PSRAM %u internal %u",
              (unsigned)tasr_nemo_weight_bytes(m), (unsigned)moved, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -273,6 +283,14 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
 // Experiment: the data cache's hardware prefetch ("autoload", off after boot) over the model's flash mapping: on a
 // miss the cache also fetches the next blocks, so weights read in order arrive while the kernel works. Only timing
 // changes, never data. (Over the whole external-memory window it faults at once: it reaches unmapped pages.)
+// second prefetch window: the PSRAM blocks allocated so far (weights moved there; all of it mapped heap)
+void dcache_autoload_psram(uintptr_t lo, uintptr_t hi)
+{
+    REG_WRITE(EXTMEM_DCACHE_AUTOLOAD_SCT1_ADDR_REG, (uint32_t)lo);
+    REG_WRITE(EXTMEM_DCACHE_AUTOLOAD_SCT1_SIZE_REG, (uint32_t)(hi - lo));
+    REG_SET_BIT(EXTMEM_DCACHE_AUTOLOAD_CTRL_REG, EXTMEM_DCACHE_AUTOLOAD_SCT1_ENA);
+    ESP_LOGI(TAG, "prefetch also over PSRAM 0x%08x + %u", (unsigned)lo, (unsigned)(hi - lo));
+}
 static void dcache_autoload(const void *addr, size_t size)
 {
     const uint32_t before = REG_READ(EXTMEM_DCACHE_AUTOLOAD_CTRL_REG);
