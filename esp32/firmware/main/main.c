@@ -15,6 +15,7 @@
 #include "tinyasr_lm.h"
 #include "tasr_nemo.h"
 #include "led.h"
+#include "mic.h"
 
 static const char *TAG = "tinyasr";
 
@@ -155,8 +156,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     }
     size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 #ifdef CONFIG_TASR_MODE_MIC
-#define MIC_PSRAM 1200000            // mic.c: 16 s audio ring (0.5 MB) + 20 s recording buffer (0.64 MB)
-    const size_t reserve = 2500000 + MIC_PSRAM;  // + 20 s utterance buffers (~2.5 MB)
+    const size_t reserve = 2500000 + MIC_PSRAM(0);  // mic ring and recording buffer (mic.h) + 20 s utterance buffers
 #else
     const size_t reserve = 2700000;  // per-utterance buffers for clips up to 20 s (1.9 MB measured at 15 s)
 #endif
@@ -170,7 +170,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
         if (probe) {
             const size_t sb = f0 - heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
             tasr_nemo_stream_free(probe);
-            keep = MIC_PSRAM + sb + 300000;  // mic ring + recording buffer, the stream, headroom
+            keep = MIC_PSRAM(1) + sb + 300000;  // mic ring (+ recording buffer without the button), the stream, headroom
             ESP_LOGI(TAG, "stream needs %u bytes of PSRAM; the rest caches weights", (unsigned)sb);
         }
     }
