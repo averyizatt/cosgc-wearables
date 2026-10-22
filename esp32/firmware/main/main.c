@@ -267,6 +267,27 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     printf("DONE\n");
 }
 
+#if CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#include "soc/extmem_reg.h"
+#include "soc/soc.h"
+// Experiment: the data cache's hardware prefetch ("autoload", off after boot) over the model's flash mapping: on a
+// miss the cache also fetches the next blocks, so weights read in order arrive while the kernel works. Only timing
+// changes, never data. (Over the whole external-memory window it faults at once: it reaches unmapped pages.)
+static void dcache_autoload(const void *addr, size_t size)
+{
+    const uint32_t before = REG_READ(EXTMEM_DCACHE_AUTOLOAD_CTRL_REG);
+    REG_WRITE(EXTMEM_DCACHE_AUTOLOAD_SCT0_ADDR_REG, (uint32_t)addr);
+    REG_WRITE(EXTMEM_DCACHE_AUTOLOAD_SCT0_SIZE_REG, (uint32_t)size);
+    uint32_t v = before & ~(EXTMEM_DCACHE_AUTOLOAD_SIZE_M | EXTMEM_DCACHE_AUTOLOAD_RQST_M | EXTMEM_DCACHE_AUTOLOAD_ORDER_M);
+    v |= ((uint32_t)CONFIG_TASR_EXP_DCACHE_AUTOLOAD << EXTMEM_DCACHE_AUTOLOAD_SIZE_S)  // blocks per autoload
+         | (0u << EXTMEM_DCACHE_AUTOLOAD_RQST_S)                                      // trigger: cache miss
+         | EXTMEM_DCACHE_AUTOLOAD_SCT0_ENA | EXTMEM_DCACHE_AUTOLOAD_ENA;
+    REG_WRITE(EXTMEM_DCACHE_AUTOLOAD_CTRL_REG, v);
+    printf("DCACHE autoload: ctrl 0x%08x -> 0x%08x, window 0x%08x + 0x%x\n", (unsigned)before,
+           (unsigned)REG_READ(EXTMEM_DCACHE_AUTOLOAD_CTRL_REG), (unsigned)(uint32_t)addr, (unsigned)size);
+}
+#endif
+
 void app_main(void)
 {
 #ifdef CONFIG_TASR_KERNEL_BENCH
@@ -287,6 +308,9 @@ void app_main(void)
     const uint8_t *mflash = map_partition(0x40, "model", &msize);
     const uint8_t *aud = map_partition(0x41, "audio", &asize);
     if (!mflash) { ESP_LOGE(TAG, "model partition missing"); return; }
+#if CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+    dcache_autoload(mflash, msize);
+#endif
 #ifdef CONFIG_TASR_KERNEL_BENCH
     extern void run_kernel_bench(const uint8_t *flash, size_t flash_bytes);
     run_kernel_bench(mflash, msize);

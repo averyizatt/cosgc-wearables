@@ -94,6 +94,11 @@ menu "tinyasr"
             1024 keeps tasr_dot_rows_s8 (the row kernel, which crashes when both cores run it) out of the K=704
             and language-model GEMMs.
 
+    config TASR_EXP_DCACHE_AUTOLOAD
+        int "Data-cache hardware prefetch over the model's flash mapping (blocks per prefetch 0-3; -1 = off)"
+        default 3
+        range -1 3
+
     config TASR_EXP_LM_SERIAL
         bool "Experiment (two cores): run the language model's matrix products on one core"
         default n
