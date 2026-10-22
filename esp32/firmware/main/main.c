@@ -267,7 +267,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     printf("DONE\n");
 }
 
-#if CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
 #include "soc/extmem_reg.h"
 #include "soc/soc.h"
 // Experiment: the data cache's hardware prefetch ("autoload", off after boot) over the model's flash mapping: on a
@@ -308,7 +308,7 @@ void app_main(void)
     const uint8_t *mflash = map_partition(0x40, "model", &msize);
     const uint8_t *aud = map_partition(0x41, "audio", &asize);
     if (!mflash) { ESP_LOGE(TAG, "model partition missing"); return; }
-#if CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
     dcache_autoload(mflash, msize);
 #endif
 #ifdef CONFIG_TASR_KERNEL_BENCH
