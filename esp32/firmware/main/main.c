@@ -274,6 +274,11 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     for (int i = 0; tasr_nemo_profile_name(i); i++)
         printf("PROF %-10s %12llu cycles %5.1f%%\n", tasr_nemo_profile_name(i), (unsigned long long)tasr_nemo_profile_value(i),
                100.0 * tasr_nemo_profile_value(i) / tot_cycles);
+    {
+        extern uint64_t tasr_lm_prof_cycles, tasr_lm_prof_calls, tasr_lm_prof_rows;  // part of "(decoder)"
+        printf("PROF (lm)      %12llu cycles in %llu GRU steps, %llu rows\n", (unsigned long long)tasr_lm_prof_cycles,
+               (unsigned long long)tasr_lm_prof_calls, (unsigned long long)tasr_lm_prof_rows);
+    }
     printf("DONE\n");
 }
 

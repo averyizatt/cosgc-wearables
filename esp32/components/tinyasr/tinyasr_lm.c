@@ -8,6 +8,17 @@
 
 #define NEG (-1e30f)
 
+#if defined(TASR_PROFILE) && defined(ESP_PLATFORM)
+#include "esp_cpu.h"
+// time in the LM's GRU steps (part of the "(decoder)" stage), how many batched steps and how many rows they had
+uint64_t tasr_lm_prof_cycles, tasr_lm_prof_calls, tasr_lm_prof_rows;
+#define LMP_BEGIN uint32_t lmp0 = esp_cpu_get_cycle_count()
+#define LMP_END(n) do { tasr_lm_prof_cycles += esp_cpu_get_cycle_count() - lmp0; tasr_lm_prof_calls++; tasr_lm_prof_rows += (n); } while (0)
+#else
+#define LMP_BEGIN
+#define LMP_END(n)
+#endif
+
 struct tasr_lm {
     int V, E, H;
     tasr_qlin_t emb;       // "linear" with n=V rows of E: row i = embedding of token i (scale per row)
@@ -159,6 +170,7 @@ static void lm_steps(tasr_decoder_t *d, const int *parent, const int *tok, const
     const tasr_lm_t *lm = d->lm;
     const int H = lm->H, V = lm->V, E = lm->E, ldq = lm->kp_max;
     if (n <= 0) return;
+    LMP_BEGIN;
     for (int i = 0; i < n; i++) {
         float *x = d->tmp + (size_t)i * (E > H ? E : H);
         const int8_t *er = lm->emb.w + (size_t)tok[i] * lm->emb.kp;
@@ -198,6 +210,7 @@ static void lm_steps(tasr_decoder_t *d, const int *parent, const int *tok, const
         const float lz = mx + logf(sum);
         for (int v = 0; v < V; v++) lp[v] = lo[v] - lz;
     }
+    LMP_END(n);
 }
 
 static int lm_step(tasr_decoder_t *d, int parent_slot, int tok)
