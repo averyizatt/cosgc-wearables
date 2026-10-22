@@ -99,6 +99,13 @@ menu "tinyasr"
         default 3
         range -1 3
 
+    config TASR_LM_INT4
+        bool "Language model's GRU and output matrices re-quantized to int4 when loaded"
+        default y
+        help
+            Halves the PSRAM traffic of each LM step (the LM is bound by it). LibriSpeech, streaming model,
+            1000 utterances on the host: WER 4.80 / 10.67 against 4.87 / 10.70 with the int8 LM.
+
     config TASR_EXP_LM_SERIAL
         bool "Experiment (two cores): run the language model's matrix products on one core"
         default n

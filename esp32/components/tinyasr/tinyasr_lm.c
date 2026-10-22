@@ -1,6 +1,7 @@
 // On-device CTC prefix beam search with GRU language-model shallow fusion (mirrors train/beam.py).
 // LM weights: int8 per-row (tasr_qlin row layout), activations dynamically quantized per step.
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "kernels.h"
 #include "tinyasr.h"
@@ -85,8 +86,37 @@ static size_t lm_move(tasr_qlin_t *L)
     L->w = p;
     return wb;
 }
+int tasr_lm_int4;  // experiment: re-quantize the LM's GRU / output matrices to int4 rows when moving them
+static void lm_int4(tasr_qlin_t *L)
+{
+    const int kp = L->kp;
+    uint8_t *q = (uint8_t *)tasr_alloc((size_t)L->n * kp / 2, 0);
+    float *s4 = (float *)tasr_alloc(sizeof(float) * L->n, 0);
+    for (int j = 0; j < L->n; j++) {
+        const int8_t *w = L->w + (size_t)j * kp;
+        int mx = 0;
+        for (int k = 0; k < kp; k++) mx = abs(w[k]) > mx ? abs(w[k]) : mx;
+        const float sc = mx ? mx / 7.0f : 1.f;  // in units of the int8 scale
+        uint8_t *o = q + (size_t)j * kp / 2;
+        for (int b = 0; b < kp; b += 32)
+            for (int i = 0; i < 16; i++) {
+                int lo = (int)lrintf(w[b + i] / sc), hi = (int)lrintf(w[b + i + 16] / sc);
+                lo = lo < -8 ? -8 : lo > 7 ? 7 : lo;
+                hi = hi < -8 ? -8 : hi > 7 ? 7 : hi;
+                o[b / 2 + i] = (uint8_t)((lo + 8) | ((hi + 8) << 4));
+            }
+        s4[j] = L->s[j] * sc;
+    }
+    L->w = (const int8_t *)q;
+    L->s = s4;
+    L->bits = 4;
+}
 size_t tasr_lm_to_ram(tasr_lm_t *lm)
 {
+    if (tasr_lm_int4) {
+        lm_int4(&lm->w_ih); lm_int4(&lm->w_hh); lm_int4(&lm->out);
+        return lm_move(&lm->emb);
+    }
     return lm_move(&lm->emb) + lm_move(&lm->w_ih) + lm_move(&lm->w_hh) + lm_move(&lm->out);
 }
 
@@ -149,6 +179,12 @@ static void lm_gemm_job(void *c, int b, int e, int w)
 static void lm_qlin(tasr_decoder_t *d, const tasr_qlin_t *L, int T, float *y, int ldy)
 {
     lmjob_t j = {d, L, T, ldy, y};
+#ifndef CONFIG_TASR_EXP_LM_SERIAL
+    if (L->bits == 4) {  // int4 rows run the row kernel, which must not run on both cores (README); the LM is
+        lm_gemm_job(&j, 0, L->n, 0);  // bound by PSRAM bandwidth, so a second core would add little anyway
+        return;
+    }
+#endif
 #ifdef CONFIG_TASR_EXP_LM_SERIAL
     lm_gemm_job(&j, 0, L->n, 0);  // experiment: the LM's GEMMs on one core (row kernel on both cores crashes, README)
 #else

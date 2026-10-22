@@ -154,6 +154,10 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     if (lmp && lbytes > 0 && lbytes < lsize) {
         tasr_lm_t *lm = tasr_lm_load(lmp + 16, lbytes);
         if (lm) {
+#ifdef CONFIG_TASR_LM_INT4
+            extern int tasr_lm_int4;
+            tasr_lm_int4 = 1;  // GRU and output matrices as int4 rows: half the PSRAM traffic per LM step
+#endif
             size_t mv = tasr_lm_to_ram(lm);
             dec = tasr_decoder_create(lm, 1025, CONFIG_TASR_BEAM, 6, tasr_lm_weight(lm, CONFIG_TASR_LM_WEIGHT_X100 / 100.0f),
                                       tasr_lm_bonus(lm, CONFIG_TASR_TOKEN_BONUS_X100 / 100.0f));
