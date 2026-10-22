@@ -156,6 +156,7 @@ static int g_version;
 static tasr_qlin_t take_qlin(cur_t *c, int n, int k, int bits, size_t *acc, int *kp_max)
 {
     tasr_qlin_t L;
+    memset(&L, 0, sizeof(L));  // fields this engine does not set (broadcast-kernel norms) stay NULL
     L.blocked = bits == 4 && g_version >= 2 && n % 16 == 0;
     int blk = (bits == 8 || L.blocked) ? 16 : 32;
     L.n = n; L.k = k; L.bits = bits;
