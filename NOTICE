@@ -80,6 +80,7 @@ Modified files:
 
 New files: esp32/firmware/main/led.c, led.h, kbench.c, mic.h; esp32/firmware/sdkconfig.bench, sdkconfig.dual,
 sdkconfig.quick; esp32/tools/bench_clips.py; esp32/firmware/main/api.c, api.h and esp32/tools/oido_client.py (the device API);
-docs/API.md; LICENSING.md.
+esp32/firmware/main/ble.c, ble.h, sdkconfig.ble, sdkconfig.ble_dev, sdkconfig.l1m and partitions_nemo16ble.csv (Bluetooth);
+docs/API.md; LICENSING.md. The README was rewritten for this project; Oído's original is kept as README.upstream.md.
 
 The models are unchanged.

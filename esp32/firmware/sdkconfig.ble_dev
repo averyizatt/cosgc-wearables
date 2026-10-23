@@ -1,0 +1,2 @@
+# Development variant: Bluetooth pairing without a PIN ("just works"), so a laptop or script can connect without a dialog
+# CONFIG_TASR_BLE_PASSKEY is not set

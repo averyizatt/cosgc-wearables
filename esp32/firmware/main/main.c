@@ -15,6 +15,7 @@
 #include "tinyasr.h"
 #include "tinyasr_lm.h"
 #include "tasr_nemo.h"
+#include "ble.h"
 #include "led.h"
 #include "mic.h"
 
@@ -93,7 +94,7 @@ static void par_for(tasr_job_fn fn, void *ctx, int n)
 // buffers are allocated before the engine's buffers, so this only needs to cover later runtime allocations. A Wi-Fi or
 // BLE stack needs much more (raise this to ~72 KB, which costs speed: the utterance path's 45 KB activation tile then
 // lands in PSRAM, measured 4 % slower).
-#define INTERNAL_RESERVE (32 * 1024)
+#define INTERNAL_RESERVE (CONFIG_TASR_INTERNAL_RESERVE_KB * 1024)
 static uintptr_t g_ps_lo = UINTPTR_MAX, g_ps_hi;  // span of the PSRAM blocks handed out (prefetch window)
 static void *fw_alloc(size_t n, int kind)
 {
@@ -320,6 +321,7 @@ void app_main(void)
 #ifdef CONFIG_TASR_KERNEL_BENCH
     vTaskDelay(pdMS_TO_TICKS(3000));  // benchmark builds: on the native USB console, give the monitor time to attach
 #endif
+    ble_start();  // first: the radio needs internal RAM, and the engine takes what is left
     led_start();  // dim blue while the model loads
     calibrate();
     tasr_alloc = fw_alloc;
@@ -327,7 +329,7 @@ void app_main(void)
 #ifndef TASR_SINGLE_CORE
     g_start = xSemaphoreCreateBinary();
     g_done = xSemaphoreCreateBinary();
-    xTaskCreatePinnedToCore(worker_task, "asr_w1", 16384, NULL, configMAX_PRIORITIES - 2, NULL, 1);
+    xTaskCreatePinnedToCore(worker_task, "asr_w1", CONFIG_TASR_WORKER_STACK, NULL, configMAX_PRIORITIES - 2, NULL, 1);
     tasr_parallel = par_for;
     ESP_LOGI(TAG, "dual-core enabled");
 #endif

@@ -10,6 +10,7 @@ typedef struct {
     const char *mode;  // "streaming" or "utterance"
     bool lm;           // language model beam search on
     bool ptt;          // push-to-talk button
+    bool ble;          // the Bluetooth service is built in
 } api_info_t;
 
 void api_start(const api_info_t *info);  // starts the command reader; announces itself with a "hello" event
@@ -28,6 +29,13 @@ bool api_talk_held(void);
 
 // one line of text from a client (a transport calls this with each complete line)
 void api_handle_line(const char *line);
+
+void api_ble(const char *event);                      // "connected" | "secure" | "disconnected" (Bluetooth link changes)
+void api_ack(const char *cmd, int id, bool ok, const char *err);  // for commands handled elsewhere; id < 0: none
+
+// commands a transport adds (for example "ble_unpair"): return true if it handled cmd (and acked it)
+typedef bool (*api_ext_t)(const char *cmd, int id);
+void api_set_ext_handler(api_ext_t fn);
 
 // transports: called with every outgoing line (without the newline); register one with api_add_sink
 typedef void (*api_sink_t)(const char *line, int len);

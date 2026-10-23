@@ -32,6 +32,16 @@ static int s_utt;                  // number of the current utterance (starts at
 static const char *s_state = "idle";
 static double s_last_delay_ms;
 static int64_t s_level_t;
+static api_ext_t s_ext;
+
+// least stack ever left free (bytes) of the named task, or 0 if there is no such task
+static unsigned stack_min(const char *name)
+{
+    TaskHandle_t t = xTaskGetHandle(name);
+    return t ? (unsigned)uxTaskGetStackHighWaterMark(t) : 0;
+}
+
+void api_set_ext_handler(api_ext_t fn) { s_ext = fn; }
 
 void api_add_sink(api_sink_t sink)
 {
@@ -139,6 +149,15 @@ void api_warn(const char *code, int value)
     xSemaphoreGive(s_fmt_mux);
 }
 
+void api_ble(const char *event)
+{
+    char line[64];
+    const int n = snprintf(line, sizeof(line), "{\"type\":\"ble\",\"event\":\"%s\"}", event);
+    xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
+    send_line(line, n);
+    xSemaphoreGive(s_fmt_mux);
+}
+
 void api_level(float dbfs)
 {
     if (!s_level_on || !s_mux) return;
@@ -157,10 +176,10 @@ static void send_hello(void)
     const esp_app_desc_t *d = esp_app_get_description();
     char line[320];
     const int n = snprintf(line, sizeof(line),
-                           "{\"type\":\"hello\",\"api\":%d,\"fw\":\"%s\",\"mode\":\"%s\",\"lm\":%s,\"ptt\":%s,\"cores\":%d,"
+                           "{\"type\":\"hello\",\"api\":%d,\"fw\":\"%s\",\"mode\":\"%s\",\"lm\":%s,\"ptt\":%s,\"ble\":%s,\"cores\":%d,"
                            "\"uptime_s\":%d,\"psram_free\":%u,\"internal_free\":%u}",
                            API_VERSION, d ? d->version : "?", s_info.mode, s_info.lm ? "true" : "false",
-                           s_info.ptt ? "true" : "false",
+                           s_info.ptt ? "true" : "false", s_info.ble ? "true" : "false",
 #ifdef TASR_SINGLE_CORE
                            1,
 #else
@@ -173,17 +192,22 @@ static void send_hello(void)
     xSemaphoreGive(s_fmt_mux);
 }
 
-static void reply(const cJSON *id, const char *cmd, bool ok, const char *err)
+void api_ack(const char *cmd, int idv, bool ok, const char *err)
 {
     char line[160];
     char idbuf[32] = "";
-    if (cJSON_IsNumber(id)) snprintf(idbuf, sizeof(idbuf), ",\"id\":%d", (int)id->valuedouble);
+    if (idv >= 0) snprintf(idbuf, sizeof(idbuf), ",\"id\":%d", idv);
     int n = snprintf(line, sizeof(line), "{\"type\":\"ack\",\"cmd\":\"%.20s\",\"ok\":%s%s", cmd, ok ? "true" : "false", idbuf);
     if (err) n += snprintf(line + n, sizeof(line) - n, ",\"error\":\"%.40s\"", err);
     n += snprintf(line + n, sizeof(line) - n, "}");
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
     send_line(line, n);
     xSemaphoreGive(s_fmt_mux);
+}
+
+static void reply(const cJSON *id, const char *cmd, bool ok, const char *err)
+{
+    api_ack(cmd, cJSON_IsNumber(id) ? (int)id->valuedouble : -1, ok, err);
 }
 
 void api_handle_line(const char *text)
@@ -213,13 +237,14 @@ void api_handle_line(const char *text)
         if (cJSON_IsBool(lv)) { s_level_on = cJSON_IsTrue(lv); reply(id, cmd, true, NULL); }
         else reply(id, cmd, false, "unknown setting");
     } else if (!strcmp(cmd, "status")) {
-        char line[200];
+        char line[320];
         const int n = snprintf(line, sizeof(line),
                                "{\"type\":\"status\",\"state\":\"%s\",\"utt\":%d,\"last_delay_ms\":%.0f,\"uptime_s\":%d,"
-                               "\"psram_free\":%u,\"internal_free\":%u}",
+                               "\"psram_free\":%u,\"internal_free\":%u,\"internal_min\":%u,\"stack_free_main\":%u,\"stack_free_worker\":%u}",
                                s_state, s_utt, s_last_delay_ms, (int)(esp_timer_get_time() / 1000000),
                                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+                               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                               (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), stack_min("main"), stack_min("asr_w1"));
         xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
         send_line(line, n);
         xSemaphoreGive(s_fmt_mux);
@@ -228,6 +253,8 @@ void api_handle_line(const char *text)
         reply(id, cmd, true, NULL);
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
+    } else if (s_ext && s_ext(cmd, cJSON_IsNumber(id) ? (int)id->valuedouble : -1)) {
+        // handled (and acked) by a transport
     } else {
         reply(id, cmd, false, "unknown command");
     }

@@ -40,6 +40,7 @@ def main():
         clips.append([os.path.relpath(path, ROOT).replace(os.sep, "/"), r["ref"]])
         print(f"{name}: {len(pcm) / 16000:.1f} s  {r['label']}")
     json.dump(clips, open(os.path.join(OUT, "clips.json"), "w"), indent=1)
+    json.dump(clips[:1], open(os.path.join(OUT, "clips1.json"), "w"), indent=1)  # one clip, for the 256 KB audio partition of the BLE layout
     print(f"{len(clips)} clips, {used} of {AUDIO_SIZE} bytes -> {os.path.relpath(OUT, ROOT)}/clips.json")
 
 

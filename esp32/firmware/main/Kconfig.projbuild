@@ -24,6 +24,43 @@ menu "tinyasr"
             With a button, an utterance is what you say while holding it (plus 0.3 s from before the press) and the
             final text comes as soon as it is released, with no end-of-speech pause; noise is never transcribed.
             Without one (-1), the energy VAD starts and ends utterances.
+    config TASR_BLE
+        bool "Bluetooth LE service for the device API (docs/API.md)"
+        default n
+        help
+            Adds NimBLE and a GATT service in the Nordic UART layout that carries the same JSON lines as the USB port.
+            Needs the 1 MB app partition (partitions_nemo16ble.csv) and about 30-60 KB of internal RAM; see sdkconfig.ble.
+
+    config TASR_BLE_PASSKEY
+        bool "Bluetooth pairing needs a 6-digit PIN shown on the screen"
+        default y
+        depends on TASR_BLE
+        help
+            Without it pairing is "just works": encrypted, but anyone in range can pair (development only).
+
+    config TASR_BLE_NAME
+        string "Bluetooth device name"
+        default "cosgc-oido"
+        depends on TASR_BLE
+
+    config TASR_INTERNAL_RESERVE_KB
+        int "Internal RAM kept free when the engine asks for a hot work buffer (KB)"
+        default 32
+        help
+            Buffers the engine wants in fast internal RAM fall back to PSRAM below this much free. Nothing allocates
+            later at run time, so a small value is enough once everything is set up (the Bluetooth build uses 8).
+
+    config TASR_WORKER_STACK
+        int "Stack of the second core's worker task (bytes)"
+        default 16384
+        help
+            Measured high-water use: about 6 KB (two-core build). The Bluetooth build uses 10 KB to free internal RAM.
+
+    config TASR_I2S_DMA_DESC
+        int "I2S DMA buffers of 20 ms each"
+        default 8
+        range 2 16
+
     config TASR_LED_GPIO
         int "Status LED: addressable RGB LED (WS2812) GPIO; -1 = none"
         default -1

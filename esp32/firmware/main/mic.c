@@ -23,6 +23,11 @@
 
 #ifdef CONFIG_TASR_MODE_MIC
 #define RING_SAMPLES MIC_RING_SAMPLES  // mic.h
+#ifdef CONFIG_TASR_BLE
+#define HAS_BLE true
+#else
+#define HAS_BLE false
+#endif
 static StreamBufferHandle_t g_ring;
 static i2s_chan_handle_t g_rx;
 
@@ -114,7 +119,7 @@ static void mic_start(void)
     started = 1;
     static const char *TAG = "mic";
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    cc.dma_desc_num = 8;
+    cc.dma_desc_num = CONFIG_TASR_I2S_DMA_DESC;
     cc.dma_frame_num = 320;
     ESP_ERROR_CHECK(i2s_new_channel(&cc, NULL, &g_rx));
     i2s_std_config_t sc = {
@@ -195,7 +200,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     oled_start();
     oled_status(p.idle);
-    api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true});
+    api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true, HAS_BLE});
     printf("ready (%s, push-to-talk on GPIO%d, %.2f s after boot): hold the button while you speak\n",
            p.st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
     uint32_t rd = 0;  // samples taken from the ring
@@ -275,7 +280,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
     oled_status(idle);
     int hearing = 0;
     tasr_nemo_stream_t *st = tasr_nemo_stream_new(m, 0, 0, dec);
-    api_start(&(api_info_t){st ? "streaming" : "utterance", dec != NULL, false});
+    api_start(&(api_info_t){st ? "streaming" : "utterance", dec != NULL, false, HAS_BLE});
     if (st) {  // streaming model: the encoder runs while you speak; only the last chunk is left when you stop
         printf("ready (streaming, %.2f s after boot): speak, partial text follows you, the final line prints after each pause\n",
                esp_timer_get_time() / 1e6);

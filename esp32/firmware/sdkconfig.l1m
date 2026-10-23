@@ -1,0 +1,2 @@
+# the 1 MB app partition layout without Bluetooth (reference build for the Bluetooth speed comparison)
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="esp32/firmware/partitions_nemo16ble.csv"

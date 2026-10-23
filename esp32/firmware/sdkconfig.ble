@@ -1,0 +1,18 @@
+# Bluetooth LE service (env oido_s3_ble): NimBLE as a peripheral, one connection, host stack in PSRAM.
+# The 1 MB app partition comes from partitions_nemo16ble.csv (the clip partition shrinks; live builds do not use it).
+CONFIG_TASR_BLE=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="esp32/firmware/partitions_nemo16ble.csv"
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_BONDS=3
+# CONFIG_BT_NIMBLE_ROLE_CENTRAL is not set
+# CONFIG_BT_NIMBLE_ROLE_OBSERVER is not set
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
+# internal RAM: the radio takes ~90 KB, so claw some back (see the Kconfig help of each)
+# (the default reserve of 32 KB stays: 14 KB gained 0.15 s of delay but left only 5 KB of internal RAM free)
+CONFIG_TASR_WORKER_STACK=10240
+CONFIG_TASR_I2S_DMA_DESC=4
