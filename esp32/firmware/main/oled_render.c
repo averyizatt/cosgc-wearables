@@ -66,7 +66,21 @@ static int wrap(const char *t, char lines[][COLS + 1], int max)
     return n;
 }
 
-void oled_render(uint8_t *fb, const char *status, const char *hist)
+// microphone level bar at the right end of the status line (inverted: black on white): a box with the level filled in
+// and a tick above and below the box at LEVEL_MARK_DB
+#define BAR_X 84
+static void draw_bar(uint8_t *page0, int px)
+{
+    if (px > LEVEL_PX) px = LEVEL_PX;
+    for (int x = BAR_X; x < BAR_X + LEVEL_PX + 2; x++) page0[x] &= (uint8_t)~((1 << 1) | (1 << 6));  // top and bottom edge
+    page0[BAR_X] &= (uint8_t)~0x3c;                                                                  // left and right edge
+    page0[BAR_X + LEVEL_PX + 1] &= (uint8_t)~0x3c;
+    for (int x = 0; x < px; x++) page0[BAR_X + 1 + x] &= (uint8_t)~0x3c;                             // the level
+    const int m = BAR_X + 1 + (int)((LEVEL_MARK_DB - LEVEL_DB_MIN) / (LEVEL_DB_MAX - LEVEL_DB_MIN) * LEVEL_PX);
+    page0[m] &= (uint8_t)~((1 << 0) | (1 << 7));
+}
+
+void oled_render(uint8_t *fb, const char *status, const char *hist, int level_px)
 {
     static char all[64][COLS + 1];
     int n = 0;
@@ -83,7 +97,10 @@ void oled_render(uint8_t *fb, const char *status, const char *hist)
         n += wrap(buf, all + n, 64 - n);
         u = e ? e + 1 : NULL;
     }
-    put_line(fb, 0, status, (int)strlen(status), 1);
+    int sn = (int)strlen(status);
+    if (level_px >= 0 && sn > (BAR_X - 1) / 6) sn = (BAR_X - 1) / 6;  // 13 columns beside the bar
+    put_line(fb, 0, status, sn, 1);
+    if (level_px >= 0) draw_bar(fb, level_px);
     const int first = n > ROWS - 1 ? n - (ROWS - 1) : 0;
     for (int r = 1; r < ROWS; r++) {
         const int i = first + r - 1;

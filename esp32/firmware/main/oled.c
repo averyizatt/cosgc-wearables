@@ -8,6 +8,7 @@
 #ifdef CONFIG_TASR_OLED
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -28,23 +29,51 @@ static esp_err_t cmd(const uint8_t *c, int n)
     return i2c_master_transmit(s_dev, b, n + 1, 50);
 }
 
+#define N_FULL 1u   // text changed: redraw the whole screen
+#define N_LEVEL 2u  // only the level bar changed: redraw the status line (page 0, 128 bytes, ~3 ms)
+static volatile int s_level_px = -1;  // -1: no level yet (no bar)
+static float s_level_db = -120.f;     // smoothed level
+static int64_t s_level_t;
+
 static void render_task(void *arg)
 {
     (void)arg;
     static uint8_t fb[1 + OLED_W * OLED_H / 8];
     static char st[32], hist[sizeof(s_hist) + sizeof(s_part) + 2];
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        uint32_t bits = 0;
+        xTaskNotifyWait(0, UINT32_MAX, &bits, portMAX_DELAY);
         xSemaphoreTake(s_mux, portMAX_DELAY);
         strcpy(st, s_status);
         snprintf(hist, sizeof(hist), "%s%s%s", s_hist, (s_hist[0] && s_part[0]) ? "\n" : "", s_part);
         xSemaphoreGive(s_mux);
-        oled_render(fb + 1, st, hist);
-        static const uint8_t win[] = {0x21, 0, 127, 0x22, 0, 7};  // full-screen column/page window
-        cmd(win, sizeof(win));
+        oled_render(fb + 1, st, hist, s_level_px);
         fb[0] = 0x40;  // control byte: data stream
-        i2c_master_transmit(s_dev, fb, sizeof(fb), 100);
+        if (bits & N_FULL) {
+            static const uint8_t win[] = {0x21, 0, 127, 0x22, 0, 7};  // full-screen column/page window
+            cmd(win, sizeof(win));
+            i2c_master_transmit(s_dev, fb, sizeof(fb), 100);
+        } else {
+            static const uint8_t win[] = {0x21, 0, 127, 0x22, 0, 0};  // page 0 only
+            cmd(win, sizeof(win));
+            i2c_master_transmit(s_dev, fb, 1 + OLED_W, 100);
+        }
     }
+}
+
+// fast attack, release 40 dB/s (called per 20 ms block); redraws only when the bar changes, at most 12 times a second
+void oled_level(float dbfs)
+{
+    if (!s_task) return;
+    s_level_db = dbfs > s_level_db ? dbfs : s_level_db - 0.8f;
+    float f = (s_level_db - LEVEL_DB_MIN) / (LEVEL_DB_MAX - LEVEL_DB_MIN);
+    f = f < 0.f ? 0.f : f > 1.f ? 1.f : f;
+    const int px = (int)(f * LEVEL_PX + 0.5f);
+    const int64_t now = esp_timer_get_time();
+    if (px == s_level_px || now - s_level_t < 80000) return;
+    s_level_t = now;
+    s_level_px = px;
+    xTaskNotify(s_task, N_LEVEL, eSetBits);
 }
 
 void oled_start(void)
@@ -69,7 +98,7 @@ void oled_start(void)
     s_mux = xSemaphoreCreateMutex();
     xTaskCreatePinnedToCore(render_task, "oled", 4096, NULL, 5, &s_task, TASR_AUX_CORE);
     ESP_LOGI(TAG, "SSD1306 ready (SDA %d, SCL %d)", CONFIG_TASR_OLED_SDA, CONFIG_TASR_OLED_SCL);
-    xTaskNotifyGive(s_task);
+    xTaskNotify(s_task, N_FULL, eSetBits);
 }
 
 void oled_status(const char *s)
@@ -78,7 +107,7 @@ void oled_status(const char *s)
     xSemaphoreTake(s_mux, portMAX_DELAY);
     snprintf(s_status, sizeof(s_status), "%s", s);
     xSemaphoreGive(s_mux);
-    xTaskNotifyGive(s_task);
+    xTaskNotify(s_task, N_FULL, eSetBits);
 }
 
 void oled_push(const char *text)
@@ -95,7 +124,7 @@ void oled_push(const char *text)
     if (s_hist[0]) strcat(s_hist, "\n");
     strncat(s_hist, text, sizeof(s_hist) - strlen(s_hist) - 1);
     xSemaphoreGive(s_mux);
-    xTaskNotifyGive(s_task);
+    xTaskNotify(s_task, N_FULL, eSetBits);
 }
 
 void oled_partial(const char *text)
@@ -104,11 +133,12 @@ void oled_partial(const char *text)
     xSemaphoreTake(s_mux, portMAX_DELAY);
     snprintf(s_part, sizeof(s_part), "%s", text);
     xSemaphoreGive(s_mux);
-    xTaskNotifyGive(s_task);
+    xTaskNotify(s_task, N_FULL, eSetBits);
 }
 #else
 void oled_start(void) {}
 void oled_status(const char *s) { (void)s; }
 void oled_push(const char *text) { (void)text; }
 void oled_partial(const char *text) { (void)text; }
+void oled_level(float dbfs) { (void)dbfs; }
 #endif

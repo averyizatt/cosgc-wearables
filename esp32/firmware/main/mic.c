@@ -53,12 +53,15 @@ static void capture_task(void *arg)
         size_t got = 0;
         i2s_channel_read(g_rx, raw, sizeof(raw), &got, portMAX_DELAY);
         int n = got / 4;
+        float energy = 0.f;
         for (int i = 0; i < n; i++) {  // 24-bit left-justified -> 16-bit with DC removal
             float x = (float)(raw[i] >> 8) / 256.0f;
             dc += 0.001f * (x - dc);
             float y = x - dc;
+            energy += y * y;
             pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
         }
+        if (n) oled_level(10.f * log10f(energy / n / (32768.f * 32768.f) + 1e-12f));  // dBFS of this 20 ms block
 #if CONFIG_TASR_PTT_GPIO >= 0
         const int down = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0;  // button to GND, internal pull-up
         if (down != state) {
@@ -165,7 +168,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
            released_us ? "the button was released" : "the 20 s recording limit (still holding: next part follows)");
     oled_push(p->text[0] ? p->text : "(nothing recognized)");
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
-    snprintf(p->idle, sizeof(p->idle), "* hold to talk  +%.0f ms", after);
+    snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
     oled_status(p->idle);
 }
 // Push-to-talk: an utterance is the audio between a press and a release (plus the pre-roll). Streaming models are fed
@@ -177,7 +180,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     static char text[4096];
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
-    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, text, sizeof(text), "* hold button to talk"};
+    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, text, sizeof(text), "hold to talk"};
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     oled_start();
     oled_status(p.idle);
@@ -199,7 +202,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                     tasr_nemo_stream_reset(p.st);
                     tasr_nemo_stream_feed(p.st, p.utt, p.n_utt);
                 }
-                oled_status("* hearing you...");
+                oled_status("hearing...");
                 led_set(LED_LISTEN);
             } else if (!ev.down && active) {  // release: the utterance ends at this sample
                 active = 0;
@@ -252,7 +255,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
     tasr_seg_init(&seg, utt, cap);
     seg.hang = CONFIG_TASR_SEG_HANG_MS / 20;  // 320-sample blocks
     oled_start();
-    char idle[32] = "* listening";
+    char idle[32] = "listening";
     oled_status(idle);
     int hearing = 0;
     tasr_nemo_stream_t *st = tasr_nemo_stream_new(m, 0, 0, dec);
@@ -292,7 +295,6 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
             printf("\r%s   [%.1f s audio, final text %.0f ms after the pause was detected]\n", text, n / 16000.0, dt * 1000);
             oled_push(text[0] ? text : "(nothing recognized)");
             led_set(text[0] ? LED_DONE : LED_NOTHING);
-            snprintf(idle, sizeof(idle), "* listening  +%.0f ms", dt * 1000);
             oled_status(idle);
             tasr_nemo_stream_reset(st);
             fed = 0;
@@ -307,11 +309,11 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
         const int n = tasr_seg_feed(&seg, in, (int)(got / 2));
         if (seg.speech != hearing) {  // speech started, or a blip was discarded
             hearing = seg.speech;
-            oled_status(hearing ? "* hearing you..." : idle);
+            oled_status(hearing ? "hearing..." : idle);
             led_set(hearing ? LED_LISTEN : LED_IDLE);
         }
         if (!n) continue;
-        oled_status("transcribing...");
+        oled_status("working...");
         led_set(LED_BUSY);
         int64_t t0 = esp_timer_get_time();
         tasr_nemo_transcribe(m, utt, n, dec, text, sizeof(text), NULL, 0, NULL);
@@ -319,7 +321,6 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
         printf("%s   [%.1f s audio, %.2f s compute, RTF %.2f]\n", text, n / 16000.0, dt, dt / (n / 16000.0));
         oled_push(text[0] ? text : "(nothing recognized)");
         led_set(text[0] ? LED_DONE : LED_NOTHING);
-        snprintf(idle, sizeof(idle), "* listening  rtf %.2f", dt / (n / 16000.0));
         oled_status(idle);
         hearing = 0;
         tasr_seg_next(&seg);
@@ -338,7 +339,7 @@ void run_mic(tasr_stream_t *s)
     static tasr_seg_t vad;  // shared VAD/AGC; the streaming model consumes audio as it arrives
     tasr_seg_init(&vad, NULL, 0);
     oled_start();
-    oled_status("* listening (stream)");
+    oled_status("listening");
     for (;;) {
         size_t got = xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY);
         const int n = (int)(got / 2);
