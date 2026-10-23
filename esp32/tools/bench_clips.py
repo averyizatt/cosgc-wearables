@@ -1,3 +1,4 @@
+# Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
 """Make the benchmark clips for the PlatformIO `bench` environments: decodes audio samples from docs/samples (16 kHz
 mono PCM16 WAV) into esp32/firmware/bench_clips/, as many as fit the 768 KB 'audio' partition, and writes clips.json
 ([[wav, reference], ...], paths relative to the repo root) for esp32/firmware/pio_images.py.

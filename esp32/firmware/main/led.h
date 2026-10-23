@@ -1,3 +1,4 @@
+// Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
 // Optional on-board addressable RGB LED (WS2812, e.g. GPIO48 on ESP32-S3-DevKitC-1 v1.0, GPIO38 on v1.1) showing what
 // the recognizer is doing. All functions are no-ops when CONFIG_TASR_LED_GPIO is -1.
 #pragma once

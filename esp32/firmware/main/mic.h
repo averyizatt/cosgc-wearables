@@ -1,3 +1,4 @@
+// Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
 // Live microphone buffers (PSRAM), shared by mic.c (allocates them) and main.c (keeps that much PSRAM free).
 #pragma once
 #include "sdkconfig.h"

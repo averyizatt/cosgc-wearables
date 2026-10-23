@@ -1,3 +1,4 @@
+// Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
 // Kernel memory benchmark (CONFIG_TASR_KERNEL_BENCH): times the engine's two main int8 GEMM shapes (64 rows, as in
 // the encoder) with the weights in internal RAM, PSRAM and flash and the activations in internal RAM or PSRAM.
 // Internal weights cost no memory stalls, so the gap to PSRAM / flash is the time spent waiting for weights; if the

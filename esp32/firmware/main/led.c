@@ -1,3 +1,4 @@
+// Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
 // WS2812 status LED on the RMT peripheral (no external component): 24 bits GRB, 0.3 / 0.9 us high times at 10 MHz.
 #include "led.h"
 #include <stdint.h>

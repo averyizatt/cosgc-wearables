@@ -61,3 +61,24 @@ Data used for evaluation (not redistributed)
 --------------------------------------------
 LibriSpeech (CC-BY-4.0), DEMAND noise corpus (CC-BY-4.0, used by eval/make_robust.py).
 Training-time augmentation uses MUSAN (CC-BY-4.0), which is a different corpus from DEMAND.
+
+cosgc-wearables modifications
+-----------------------------
+This repository (github.com/averyizatt/cosgc-wearables) is a modified version of Oído, changed in October 2026
+by the cosgc-wearables contributors. The changes are licensed under the GNU General Public License v3 like the rest of
+the code. Oído's copyright and license notices above are unchanged.
+
+Modified files:
+- esp32/components/tinyasr: kernels.c, kernels.h, tasr_nemo.c, tinyasr.c, tinyasr_lm.c, CMakeLists.txt. Engine speed-ups
+  that give bit-identical results: output stages fused into the matrix products, a broadcast int8 kernel for short
+  rows with an exact overflow bound, a faster int4 kernel loop, attention split by query rows, faster front-end loops,
+  per-core scratch, an int4 language model, profiling counters.
+- esp32/firmware/main: main.c, mic.c, oled.c, oled.h, oled_render.c, Kconfig.projbuild, CMakeLists.txt, sdkconfig.myboard
+  (push-to-talk, long utterances, two-core spin-wait mode, microphone level bar, data-cache prefetch, buffer sizes).
+- CMakeLists.txt, platformio.ini, .gitignore, WIRING.md, esp32/firmware/pio_images.py, esp32/tools/merge_board.py,
+  esp32/host/oled_preview.c.
+
+New files: esp32/firmware/main/led.c, led.h, kbench.c, mic.h; esp32/firmware/sdkconfig.bench, sdkconfig.dual,
+sdkconfig.quick; esp32/tools/bench_clips.py; LICENSING.md.
+
+The models are unchanged.
