@@ -79,6 +79,7 @@ Modified files:
   esp32/host/oled_preview.c.
 
 New files: esp32/firmware/main/led.c, led.h, kbench.c, mic.h; esp32/firmware/sdkconfig.bench, sdkconfig.dual,
-sdkconfig.quick; esp32/tools/bench_clips.py; LICENSING.md.
+sdkconfig.quick; esp32/tools/bench_clips.py; esp32/firmware/main/api.c, api.h and esp32/tools/oido_client.py (the device API);
+docs/API.md; LICENSING.md.
 
 The models are unchanged.

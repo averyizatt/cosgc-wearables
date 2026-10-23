@@ -16,6 +16,7 @@
 #include "tinyasr.h"
 #include "tasr_nemo.h"
 #include "tasr_seg.h"
+#include "api.h"
 #include "led.h"
 #include "mic.h"
 #include "oled.h"
@@ -61,14 +62,19 @@ static void capture_task(void *arg)
             energy += y * y;
             pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
         }
-        if (n) oled_level(10.f * log10f(energy / n / (32768.f * 32768.f) + 1e-12f));  // dBFS of this 20 ms block
+        if (n) {
+            const float db = 10.f * log10f(energy / n / (32768.f * 32768.f) + 1e-12f);  // dBFS of this 20 ms block
+            oled_level(db);
+            api_level(db);
+        }
 #if CONFIG_TASR_PTT_GPIO >= 0
-        const int down = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0;  // button to GND, internal pull-up
+        const int down = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0 || api_talk_held();  // button to GND (pull-up), or a client's virtual button
         if (down != state) {
             if (!seen++) seen_at = queued;  // the first block that read the new state
             if (seen >= 2) {                // stable for 40 ms
                 state = down;
                 seen = 0;
+                api_button(down);
                 const ptt_ev_t ev = {seen_at, (uint8_t)down, esp_timer_get_time()};
                 xQueueSend(g_ptt, &ev, 0);
                 if (!down) {  // released: say so now; the recognizer may still be seconds behind (long utterances)
@@ -92,6 +98,7 @@ static void capture_task(void *arg)
             dropped += n - sent;
         } else if (dropped) {
             ESP_LOGW("mic", "audio buffer has room again: %d ms of audio were lost", dropped / 16);
+            api_warn("audio_dropped", dropped / 16);
             led_set(LED_BUSY);
             dropped = 0;
         }
@@ -156,9 +163,11 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap
         oled_status(p->idle);
         led_set(LED_NOTHING);
+        api_state("idle");
         return;
     }
     led_set(LED_BUSY);
+    api_state("processing");
     const int64_t t0 = esp_timer_get_time();
     if (p->st) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
     else tasr_nemo_transcribe(p->m, p->utt, p->n_utt, p->dec, p->text, p->text_len, NULL, 0, NULL);
@@ -168,6 +177,8 @@ static void ptt_end(ptt_t *p, int64_t released_us)
            released_us ? "the button was released" : "the 20 s recording limit (still holding: next part follows)");
     oled_push(p->text[0] ? p->text : "(nothing recognized)");
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
+    api_final(p->text, p->n_utt / 16000.0, after);
+    api_state("idle");
     snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
     oled_status(p->idle);
 }
@@ -184,6 +195,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     oled_start();
     oled_status(p.idle);
+    api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true});
     printf("ready (%s, push-to-talk on GPIO%d, %.2f s after boot): hold the button while you speak\n",
            p.st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
     uint32_t rd = 0;  // samples taken from the ring
@@ -204,6 +216,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 }
                 oled_status("hearing...");
                 led_set(LED_LISTEN);
+                api_state("listening");
             } else if (!ev.down && active) {  // release: the utterance ends at this sample
                 active = 0;
                 npre = 0;
@@ -214,6 +227,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             ptt_end(&p, 0);
             p.n_utt = p.pre_used = 0;  // and the next part starts right here
             led_set(LED_LISTEN);
+            api_state("listening");
         }
         tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
         rd += n;
@@ -230,6 +244,8 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 printf("\r... %s", text);
                 fflush(stdout);
                 oled_partial(text);
+                api_human_partial();
+                api_partial(text);
             }
         } else {
             memcpy(p.utt + p.n_utt, blk, sizeof(int16_t) * n);
@@ -259,6 +275,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
     oled_status(idle);
     int hearing = 0;
     tasr_nemo_stream_t *st = tasr_nemo_stream_new(m, 0, 0, dec);
+    api_start(&(api_info_t){st ? "streaming" : "utterance", dec != NULL, false});
     if (st) {  // streaming model: the encoder runs while you speak; only the last chunk is left when you stop
         printf("ready (streaming, %.2f s after boot): speak, partial text follows you, the final line prints after each pause\n",
                esp_timer_get_time() / 1e6);
@@ -273,7 +290,7 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 oled_status(idle);
                 led_set(LED_IDLE);
             }
-            if (seg.speech && !hearing) led_set(LED_LISTEN);
+            if (seg.speech && !hearing) { led_set(LED_LISTEN); api_state("listening"); }
             hearing = seg.speech;
             if (!seg.speech && !n) continue;
             const int have = n ? n : seg.n;
@@ -284,17 +301,22 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
                     printf("\r... %s", text);
                     fflush(stdout);
                     oled_partial(text);
+                    api_human_partial();
+                    api_partial(text);
                 }
                 fed = have;
             }
             if (!n) continue;
             led_set(LED_BUSY);
+            api_state("processing");
             int64_t t0 = esp_timer_get_time();
             tasr_nemo_stream_finish(st, text, sizeof(text));
             const double dt = (esp_timer_get_time() - t0) / 1e6;
             printf("\r%s   [%.1f s audio, final text %.0f ms after the pause was detected]\n", text, n / 16000.0, dt * 1000);
             oled_push(text[0] ? text : "(nothing recognized)");
             led_set(text[0] ? LED_DONE : LED_NOTHING);
+            api_final(text, n / 16000.0, dt * 1000);
+            api_state("idle");
             oled_status(idle);
             tasr_nemo_stream_reset(st);
             fed = 0;
@@ -311,16 +333,20 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
             hearing = seg.speech;
             oled_status(hearing ? "hearing..." : idle);
             led_set(hearing ? LED_LISTEN : LED_IDLE);
+            api_state(hearing ? "listening" : "idle");
         }
         if (!n) continue;
         oled_status("working...");
         led_set(LED_BUSY);
+        api_state("processing");
         int64_t t0 = esp_timer_get_time();
         tasr_nemo_transcribe(m, utt, n, dec, text, sizeof(text), NULL, 0, NULL);
         const double dt = (esp_timer_get_time() - t0) / 1e6;
         printf("%s   [%.1f s audio, %.2f s compute, RTF %.2f]\n", text, n / 16000.0, dt, dt / (n / 16000.0));
         oled_push(text[0] ? text : "(nothing recognized)");
         led_set(text[0] ? LED_DONE : LED_NOTHING);
+        api_final(text, n / 16000.0, dt * 1000);
+        api_state("idle");
         oled_status(idle);
         hearing = 0;
         tasr_seg_next(&seg);
