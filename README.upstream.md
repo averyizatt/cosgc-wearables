@@ -1,5 +1,10 @@
 # Oído: speech recognition that fits in a $5 chip
 
+> **This is Oído's original README**, kept unchanged below for its engineering detail (how the engine works, accuracy
+> tables, the two-core investigation). It describes Oído as Lokutor released it; the numbers are theirs. Our project's
+> README, with our firmware's behaviour and measurements, is [README.md](README.md).
+
+
 *¡Oído!* is what cooks call out in a Spanish kitchen to confirm an order: *heard, got it*.
 
 [![Oído demo: speech recognition on a $5 chip](docs/demo.gif)](https://huggingface.co/lokutor-ai/oido-ctc-small-int8/blob/main/demo.mp4)
