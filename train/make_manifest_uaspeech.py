@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# Copyright (C) 2026 the cosgc-wearables contributors. Licensed under the GNU GPL v3 (see LICENSE).
+"""Manifest (one JSON line per clip) for the UASpeech dysarthric speech database (see docs/DATA.md for its terms).
+
+    python make_manifest_uaspeech.py G:\\cosgc\\data\\UASpeech out.jsonl [--version noisereduce] [--mics M5]
+
+The download unpacks into UASpeech_<version>_<C|FM>/UASpeech/ folders; audio is under audio/<version>/<speaker>/ and
+the words under mlf/<speaker>/*.mlf (HTK label files: a quoted "*/<file>.lab" line, then the word, then "."). Files are
+named <speaker>_<block>_<word id>_<mic>.wav. Word ids: D1-D10 digit, LA-LZ letter (radio alphabet), C = command,
+CW = common word, UW = uncommon word (different in each block).
+
+The 7 array microphones record the same utterance, so by default only one is used (--mics M5, roughly central;
+a comma list keeps several). Each line records speaker, group (dysarthric / control), sex, block, word kind and mic.
+Clips that cannot be read or are shorter than 0.3 s are dropped and counted in out_report.txt.
+"""
+import argparse, collections, glob, json, os, re
+import soundfile as sf
+
+KINDS = {"D": "digit", "L": "letter", "C": "command", "CW": "common", "UW": "uncommon"}
+
+
+def read_mlf(paths):
+    words = {}
+    for p in paths:
+        key = None
+        for line in open(p, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if line.startswith('"'):
+                key = os.path.splitext(os.path.basename(line.strip('"')))[0]
+            elif line == "." or line.startswith("#!"):
+                key = None
+            elif key and line:
+                words[key] = (words.get(key, "") + " " + line).strip()
+    return words
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root")
+    ap.add_argument("out")
+    ap.add_argument("--version", default="noisereduce", choices=["original", "normalized", "noisereduce"])
+    ap.add_argument("--mics", default="M5")
+    a = ap.parse_args()
+    mics = set(a.mics.split(","))
+    dirs = sorted(glob.glob(os.path.join(a.root, f"UASpeech_{a.version}_*", "UASpeech")))
+    assert dirs, f"no UASpeech_{a.version}_* folders under {a.root}"
+    words = read_mlf([p for d in dirs for p in glob.glob(os.path.join(d, "mlf", "**", "*.mlf"), recursive=True)
+                      if not os.path.basename(p).startswith("._")])
+    why, per_spk, out = collections.Counter(), collections.Counter(), []
+    for d in dirs:
+        for wav in sorted(glob.glob(os.path.join(d, "audio", a.version, "*", "*.wav"))):
+            name = os.path.splitext(os.path.basename(wav))[0]
+            if name.startswith("._"):
+                continue
+            parts = name.split("_")
+            if len(parts) != 4:
+                why["unexpected file name"] += 1
+                continue
+            spk, block, wid, mic = parts
+            if mic not in mics:
+                continue
+            text = re.sub(r"[^a-z' ]", " ", words.get(name, "").lower()).strip()
+            if not text:
+                why["no transcript"] += 1
+                continue
+            try:
+                info = sf.info(wav)
+            except Exception:
+                why["unreadable audio file"] += 1
+                continue
+            dur = info.frames / info.samplerate
+            if dur < 0.3:
+                why["shorter than 0.3 s"] += 1
+                continue
+            out.append({"wav": os.path.abspath(wav), "text": text, "duration": round(dur, 3), "source": "uaspeech",
+                        "speaker": spk, "group": "control" if spk.startswith("C") else "dysarthric",
+                        "sex": "female" if spk.lstrip("C").startswith("F") else "male", "block": block,
+                        "kind": "letter" if re.fullmatch(r"L[A-Z]", wid) else KINDS.get(re.sub(r"\d", "", wid), "?"),
+                        "mic": mic, "sr": info.samplerate})
+            per_spk[spk] += 1
+    with open(a.out, "w", encoding="utf-8") as f:
+        for it in out:
+            f.write(json.dumps(it) + "\n")
+    h = sum(i["duration"] for i in out) / 3600
+    lines = [f"{len(out)} clips, {h:.2f} h, version {a.version}, mics {sorted(mics)}",
+             "dropped: " + (", ".join(f"{n} {r}" for r, n in why.most_common()) or "none"),
+             "clips per speaker: " + ", ".join(f"{s} {n}" for s, n in sorted(per_spk.items())),
+             f"sample rates: {dict(collections.Counter(i['sr'] for i in out))}",
+             f"kinds: {dict(collections.Counter(i['kind'] for i in out))}"]
+    open(os.path.splitext(a.out)[0] + "_report.txt", "w").write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    main()
