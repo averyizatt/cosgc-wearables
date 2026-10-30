@@ -48,7 +48,8 @@ def load_manifest(paths, min_dur=0.3, max_dur=20.0, sp=None, max_per_source=None
             if max_per_source and per_src.get(src, 0) >= max_per_source.get(src, 1 << 60):
                 continue
             per_src[src] = per_src.get(src, 0) + 1
-            items.append({"wav": d["wav"], "text": txt, "dur": dur, "src": src, **({"twer": d["twer"]} if "twer" in d else {})})
+            items.append({"wav": d["wav"], "text": txt, "dur": dur, "src": src, **({"twer": d["twer"]} if "twer" in d else {}),
+                          **({k: d[k] for k in ("pack", "off", "n")} if "pack" in d else {})})
     if sp is not None:
         keep = []
         for it in items:
@@ -61,6 +62,15 @@ def load_manifest(paths, min_dur=0.3, max_dur=20.0, sp=None, max_per_source=None
     return items
 
 
+_packs = {}  # per process (DataLoader worker): open .pack files (pack_audio.py)
+
+
+def read_packed(it):
+    if it["pack"] not in _packs:
+        _packs[it["pack"]] = np.memmap(it["pack"], dtype="<i2", mode="r")
+    return np.array(_packs[it["pack"]][it["off"]: it["off"] + it["n"]])
+
+
 class AudioDataset(Dataset):
     def __init__(self, items):
         self.items = items
@@ -70,6 +80,8 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, i):
         it = self.items[i]
+        if "pack" in it:
+            return read_packed(it), it.get("ids", []), i
         try:
             a, sr = sf.read(it["wav"], dtype="int16", always_2d=False)
             if a.ndim > 1:

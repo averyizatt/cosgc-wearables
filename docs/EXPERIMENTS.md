@@ -356,6 +356,13 @@ dysarthria and state this).
 **atyp3 progress (2026-10-30):** validation WER at chunk 32 / left 128 was 8.87 at step 2500 and **8.54 at step 3000**,
 already below atyp2's final 8.66. Full results when the run ends.
 
+**Interruption (2026-10-30, about 16:45):** atyp3 was stopped at about step 3250 to free RAM on the training PC and
+restarted from its last checkpoint (`ckpt.pt`, saved every 250 steps: model, EMA, optimizer and step) a few minutes
+later. Batches after the restart do not repeat the exact order of an uninterrupted run (new loader processes; the
+sampler restarts the epoch), so this is not bit-identical to an uninterrupted run, but the schedule continues from
+the saved step. The restart overwrote `atyp3.log`, so the per-step log before the restart is lost; the validation
+numbers above were copied from it beforehand. The run scripts now append to their logs.
+
 ### E6. big1: a deeper model for the ESP32-P4 (queued 2026-10-30)
 
 **Why:** the device moves from the ESP32-S3 to the ESP32-P4 (400 MHz instead of 240, 32 MB flash and 32 MB PSRAM
@@ -375,7 +382,11 @@ already read the depth from the header (`export_nemo.py` used to write 16 and 17
 model's sizes).
 
 **Settings:** identical to atyp2 (`train/runs/big1.cmd`), so the difference to atyp2 measures depth alone. The grown
-model is also evaluated before training, to measure what inserting the layers costs.
+model is also evaluated before training, to measure what inserting the layers costs. One change that does not affect
+the model: the training audio is read from packed files (`train/pack_audio.py`: the same samples (check pending),
+stored back to back sorted by duration). With one file per clip, the duration-bucketed batches made the training PC's
+hard drive seek constantly (100 % busy at 1–2 MB/s during atyp3), which slowed the PC and likely the training. Compare
+big1's time per step with atyp2's, keeping in mind the deeper model also costs about 1.5× compute.
 
 **What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
 per second of speech for both models; big1 is only useful if it stays under 1.0.
