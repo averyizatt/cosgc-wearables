@@ -9,7 +9,7 @@ set D=G:\cosgc\data
 set E=G:\cosgc\exp
 set PY=G:\cosgc\venv\Scripts\python.exe -u
 set KD=0
-set LR=3e-5
+set LR=5e-5
 rem TORGO listed twice = repeated 2x (atyp1 used 3x)
 %PY% train_nemo_stream.py --nemo %E%\base --init %E%\base\init.pt --keep_head ^
   --train %D%\ls100_train.jsonl,%D%\torgo_train.jsonl,%D%\torgo_train.jsonl ^
