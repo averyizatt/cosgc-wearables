@@ -12,12 +12,13 @@ device runs. Greedy decoding (no language model), the same arithmetic as the tra
 in training logs are comparable; the device with its LM does a little better.
 Writes per-utterance hypotheses next to the summary so errors can be listened to.
 """
-import argparse, collections, json, os, sys
+import argparse, collections, json, os, random, sys
 import torch, sentencepiece as spm, soundfile as sf, jiwer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nemo_small import NemoSmall
 from train_nemo_stream import BatchPre, SModel, ctc_greedy
+from simdys import SEVERITY, simulate
 
 
 def main():
@@ -31,6 +32,8 @@ def main():
     ap.add_argument("--chunk", type=int, default=32)
     ap.add_argument("--left", type=int, default=128)
     ap.add_argument("--limit", type=int, default=0, help="evaluate only every n-th clip (quick look)")
+    ap.add_argument("--simdys", default="", help="distort every clip with simdys.py at this severity (mild, moderate, "
+                    "severe or 0-1), to test models on simulated dysarthria")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     sd = torch.load(f"{a.nemo}/state_dict_plain.pt", map_location="cpu")
@@ -56,6 +59,9 @@ def main():
             if w.ndim > 1:
                 w = w.mean(1)
             f, fl = pre(torch.from_numpy(w)[None].to(dev), torch.tensor([len(w)], device=dev))
+            if a.simdys:
+                sev = SEVERITY[a.simdys] if a.simdys in SEVERITY else float(a.simdys)
+                f, fl = simulate(f, fl, torch.tensor([True]), pre.mean, pre.std, random.Random(n), (sev, sev))
             r = dict(it)
             for mode in modes:
                 ch, lf = (0, 0) if mode == "full" else (a.chunk, a.left)

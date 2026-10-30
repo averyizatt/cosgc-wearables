@@ -217,6 +217,10 @@ Test results: to be added when the run finishes. Targets are in [TRAINING_PLAN.m
 
 ### E4. atyp3: atyp2 + simulated dysarthria (queued 2026-10-30)
 
+**Correction (2026-10-30, before the run started):** the queued atyp3 was switched from simulation version 1 (below) to
+version 2, calibrated in E5, with `--dys_severity 0.2,1.0`. Version 1 was never trained with. Its description is kept
+because E5 explains why it was replaced (its "tremor" pushed the 3–8 Hz rhythm the wrong way, and it lacked pauses).
+
 **Question:** does distorting typical speech toward dysarthric traits help on real dysarthric speakers, beyond what
 TORGO alone gives? Free and needs no data agreement, so worth knowing for the paper either way.
 
@@ -242,6 +246,82 @@ measures the simulation alone. One seed each, so a small difference will not be 
 **What to compare:** dysarthric speakers F03 and M05 (should improve if the simulation works), sentences separately
 from words, and LibriSpeech (should not get worse, since the distortions only touch training clips).
 
+### E5. Calibrating simulated dysarthria against TORGO (2026-10-30)
+
+**Goal:** make the simulation resemble real dysarthric speech by measurement, not by ear, and check it the two ways
+a reviewer would ask: does it sound (measure) like dysarthric speech, and does it make the recognizer fail like
+dysarthric speech does.
+
+**Measurements** (`train/dys_stats.py`, on log-mel features, leading and trailing silence trimmed, medians over clips):
+
+| measure | definition | expected in dysarthria |
+|---|---|---|
+| rate | letters per second of speaking time | lower |
+| pause | share of the trimmed clip more than 30 dB below the clip's loud frames | higher |
+| flux | mean absolute change between neighbouring frames during speech, dB per mel band | lower if articulation is slurred |
+| hilo | energy of top 20 mel bands minus bottom 20 during speech, dB | lower (weak consonants) |
+| rhythm (`trem` in the output) | share of the loudness contour's 0.5–20 Hz modulation energy at 3–8 Hz | changes if tremor or rhythm changes |
+
+**Real speech** (1500 random clips per set; `G:\cosgc\exp\dysstats_real.json`). Only TORGO **sentences** are compared,
+dysarthric against control, because the same prompts were recorded with the same equipment. Comparisons with
+LibriSpeech mix in recording differences: TORGO's background noise makes nearly every word-clip frame count as
+"speech" (pause ≈ 0), and its microphones give hilo values 10–15 dB apart between sessions.
+
+| TORGO sentences | rate | pause | flux | hilo | rhythm | clips |
+|---|---|---|---|---|---|---|
+| test speakers, control | 10.23 | 0.019 | 3.69 | 0.60 | 0.414 | 278 |
+| test speakers, dysarthric | 7.14 | 0.124 | 3.43 | −0.32 | 0.284 | 125 |
+| training speakers, control | 7.62 | 0.000 | 3.48 | 10.02 | 0.423 | 258 |
+| training speakers, dysarthric | 7.15 | 0.183 | 3.57 | −3.67 | 0.180 | 115 |
+| LibriSpeech test-clean (all) | 15.85 | 0.156 | 4.05 | −3.07 | 0.337 | 1500 |
+
+Dysarthric relative to control, the targets for the simulation: rate × 0.70–0.94; pause +0.12 to +0.18; flux
+× 0.93–1.02 (articulation smoothness barely differs); hilo −0.9 to −13.7 dB; rhythm × 0.43–0.69.
+
+**Finding 7:** the 3–8 Hz loudness modulation is *weaker* in dysarthric speech, not stronger. In running speech this
+band is dominated by the syllable rhythm (about 4–5 syllables per second), and dysarthric speech has a flatter
+rhythm. Version 1's tremor added energy in exactly this band, the opposite of what the data shows, and version 1 had
+no pauses, the clearest difference in the table.
+
+**Version 2** (`distort_severity` in `train/simdys.py`): one severity s in (0, 1] scales every trait together, as in
+real speakers, where severe dysarthria shows all of them more strongly. In order: pieces of 150–500 ms stretched by
+1 + s · U(0.1, 0.8); frame-level variation added back to interpolated frames (interpolation is smoother than real slow
+speech); loudness contour pulled toward its 300 ms average by s · U(0.1, 0.3); mel-band blur s · U(0.1, 0.4); high
+bands lowered by up to s · U(6, 16) dB (linear across bands); breathy noise with probability 0.5 s; tremor with
+probability 0.15 (some speakers have it); pauses of 150–450 ms (copies of the clip's quietest frames) at energy dips,
+about 30 % · s of the clip. Named levels: mild 0.3, moderate 0.6, severe 1.0.
+
+Three calibration rounds on 400 LibriSpeech test-clean clips (`G:\cosgc\exp\dysstats_sim2.json` holds the last):
+
+| simulated / original | rate | pause | flux | hilo | rhythm |
+|---|---|---|---|---|---|
+| target (TORGO dysarthric / control) | × 0.70–0.94 | +0.12 to +0.18 | × 0.93–1.02 | −1 to −14 dB | × 0.43–0.69 |
+| round 1: mild / moderate / severe | 0.85 / 0.74 / 0.63 | +0.02 / +0.05 / +0.10 | 0.67 / 0.55 / 0.48 | −1.4 / −2.6 / −3.5 | 0.66 / 0.40 / 0.28 |
+| round 2 (no time blur, more pauses, more dulling, flux restored) | 0.85 / 0.75 / 0.64 | +0.05 / +0.12 / +0.21 | 0.78 / 0.71 / 0.65 | −2.1 / −4.3 / −5.3 | 0.61 / 0.43 / 0.32 |
+| round 3 (final: more frame variation, less rhythm flattening) | 0.87 / 0.76 / 0.66 | +0.06 / +0.13 / +0.23 | 0.88 / 0.80 / 0.74 | −2.1 / −3.9 / −5.2 | 0.65 / 0.48 / 0.36 |
+
+Round 1 is version 2 before tuning. At moderate severity, rate, pauses, dulling and rhythm fall in the TORGO range.
+Remaining gap: the simulated speech is still somewhat smoother frame to frame than real speech (flux × 0.80 vs 0.93–1.02).
+
+**Effect on the shipped model** (`eval_manifest.py --simdys`, every 5th LibriSpeech test-clean clip, 524 clips;
+`G:\cosgc\exp\eval\base_ls_sim_*.json`):
+
+| | full | stream | stream / original |
+|---|---|---|---|
+| original (all clips, from section 3) | 4.01 | 6.21 | 1.0 |
+| simulated mild | 7.74 | 11.65 | 1.9 |
+| simulated moderate | 12.74 | 19.52 | 3.1 |
+| simulated severe | 24.40 | 35.50 | 5.7 |
+
+For comparison, real TORGO speakers against TORGO controls (streaming, section 3): F03 2.5×, M05 3.9×, all dysarthric
+3.0×. **Finding 8:** at moderate severity the simulation degrades the shipped model by about as much as real
+dysarthria does. That is necessary for the simulation to be useful, but not sufficient: the model could fail on
+simulated speech for different reasons than on real speech. Whether training on it helps real speakers is E4.
+
+Caveats: one random draw per clip; measurement medians over a few hundred clips; the measurements are our own
+simple proxies, not validated clinical measures (for the paper, cite the literature on acoustic markers of
+dysarthria and state this).
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -250,6 +330,10 @@ from words, and LibriSpeech (should not get worse, since the distortions only to
 3. On TORGO, much of that gain is on its repeated word list; sentence-level gains are small.
 4. Frame-level in-place distillation, a common technique for streaming models, damaged streaming accuracy when used
    to fine-tune an already-streaming model. Turning it off removed the problem.
+5. In TORGO, dysarthric speakers differ from controls reading the same sentences mainly by more pauses, slower rate,
+   weaker high frequencies and a flatter syllable rhythm, not by smoother articulation (E5).
+6. A simulation calibrated to those differences degrades the shipped model by about as much as real dysarthria does
+   (E5). Whether training on it helps is pending (E4).
 
 ## 6. Threats to validity and open issues
 

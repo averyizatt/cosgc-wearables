@@ -19,7 +19,7 @@ models saw TORGO (see "Models and their data" below).
 | What | Read audiobook English from LibriVox, 16 kHz FLAC, with transcripts |
 | Source | https://www.openslr.org/12 (OpenSLR resource 12), Panayotov, Chen, Povey, Khudanpur, "LibriSpeech: an ASR corpus based on public domain audio books", ICASSP 2015 |
 | License | CC-BY-4.0 (the text in `LibriSpeech/LICENSE.TXT`). Use for anything, with attribution. |
-| Parts we use | `train-clean-100` (100 h, training: the "typical speech" share of every batch), `dev-clean` (5.4 h, smoke tests and validation), `test-clean` and `test-other` (evaluation; never trained on) |
+| Parts we use | `train-clean-100` (100 h, training: the "typical speech" share of every batch), `train-clean-360` (363 h, 921 speakers; downloaded 2026-10-30 as more source material for simulated dysarthria, not yet used), `dev-clean` (5.4 h, smoke tests and validation), `test-clean` and `test-other` (evaluation; never trained on) |
 | Location | `G:\cosgc\data\LibriSpeech\<part>` |
 | Why | Keeps the model from forgetting typical speech while it learns atypical speech, and gives a standard test to compare against the published numbers (README: 4.9 % test-clean streaming) |
 

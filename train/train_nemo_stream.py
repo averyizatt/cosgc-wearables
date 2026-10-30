@@ -236,8 +236,11 @@ def main():
     ap.add_argument("--p_speed", type=float, default=0.0, help="speed perturbation 0.9x / 1.1x (needs --aug_dir)")
     ap.add_argument("--p_dys", type=float, default=0.0, help="simulated dysarthria (simdys.py) on this share of typical clips")
     ap.add_argument("--dys_sources", default="torgo", help="manifest sources that are already atypical (never distorted)")
+    ap.add_argument("--dys_severity", default="", help="lo,hi: simdys version 2 with severity uniform in [lo, hi] "
+                    "(e.g. 0.2,1.0); empty: version 1")
     a = ap.parse_args()
     dys_src = set(a.dys_sources.split(","))
+    dys_sev = tuple(float(v) for v in a.dys_severity.split(",")) if a.dys_severity else None
     assert not a.p_dys or a.stream, "--p_dys needs the fixed normalization of --stream"
     dev = "cuda"
     os.makedirs(a.out, exist_ok=True)
@@ -354,7 +357,7 @@ def main():
                 f, fl = pre(wav, lens)
                 if a.p_dys:  # simulated dysarthria on typical speech only (not on clips from --dys_sources)
                     sel = torch.tensor([items[j]["src"] not in dys_src and random.random() < a.p_dys for j in idx.tolist()])
-                    f, fl = simulate(f, fl, sel, pre.mean, pre.std)
+                    f, fl = simulate(f, fl, sel, pre.mean, pre.std, severity=dys_sev)
                 B, T, _ = f.shape
                 fr = torch.arange(80, device=dev)[None]
                 for _ in range(2):

@@ -12,7 +12,8 @@ if (-not (Test-Path $log)) { "date`tname`turl`tbytes`tsha256`tstatus" | Out-File
 $items = @(
   # name, url, marker (path that exists once unpacked)
   @("librispeech-train-clean-100", "https://www.openslr.org/resources/12/train-clean-100.tar.gz", "LibriSpeech\train-clean-100"),
-  @("librispeech-dev-clean",       "https://www.openslr.org/resources/12/dev-clean.tar.gz",       "LibriSpeech\dev-clean"),
+  @("librispeech-train-clean-360", "https://www.openslr.org/resources/12/train-clean-360.tar.gz", "LibriSpeech\train-clean-360"),
+  @("librispeech-dev-clean",      "https://www.openslr.org/resources/12/dev-clean.tar.gz",       "LibriSpeech\dev-clean"),
   @("librispeech-test-clean",      "https://www.openslr.org/resources/12/test-clean.tar.gz",      "LibriSpeech\test-clean"),
   @("librispeech-test-other",      "https://www.openslr.org/resources/12/test-other.tar.gz",      "LibriSpeech\test-other"),
   # TORGO archives unpack into one folder per speaker
