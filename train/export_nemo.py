@@ -18,7 +18,7 @@ def export(d, out, bits=8, ckpt=None, tokenizer=None, chunk=32, left=128):
     sd = dict(torch.load(path, map_location="cpu"))
     rnnt = "decoder.prediction.embed.weight" in sd
     if rnnt:  # NemoSmall builds a CTC head; the transducer has none
-        sd["decoder.decoder_layers.0.weight"] = torch.zeros(1025, 176, 1)
+        sd["decoder.decoder_layers.0.weight"] = torch.zeros(1025, sd["encoder.pre_encode.out.weight"].shape[0], 1)
         sd["decoder.decoder_layers.0.bias"] = torch.zeros(1025)
     m = NemoSmall(sd).eval()
     st = {}
@@ -35,7 +35,9 @@ def export(d, out, bits=8, ckpt=None, tokenizer=None, chunk=32, left=128):
     sp = spm.SentencePieceProcessor(model_file=tokenizer)
     V = sp.get_piece_size()
     w = W()
-    w.buf += b"TNM1" + struct.pack("<15I", 1, 176, 4, 704, 31, 16, 176, V, bits, int(rnnt), flags,
+    L0 = m.layers[0]  # sizes from the model (grow_nemo.py makes deeper ones; the engine reads them from this header)
+    w.buf += b"TNM1" + struct.pack("<15I", 1, m.d, L0.h, L0.ff1_l1.out_features, L0.dw.kernel_size[0], len(m.layers),
+                                   m.conv0.out_channels, V, bits, int(rnnt), flags,
                                    chunk if flags & 2 else 0, left if flags & 2 else 0, 0, 0)
     w.f32(m.pre.window)
     w.f32(m.pre.fb.t().contiguous().reshape(-1))            # (257, 80) row-major, like TASR

@@ -353,6 +353,33 @@ Caveats: one random draw per clip; measurement medians over a few hundred clips;
 simple proxies, not validated clinical measures (for the paper, cite the literature on acoustic markers of
 dysarthria and state this).
 
+**atyp3 progress (2026-10-30):** validation WER at chunk 32 / left 128 was 8.87 at step 2500 and **8.54 at step 3000**,
+already below atyp2's final 8.66. Full results when the run ends.
+
+### E6. big1: a deeper model for the ESP32-P4 (queued 2026-10-30)
+
+**Why:** the device moves from the ESP32-S3 to the ESP32-P4 (400 MHz instead of 240, 32 MB flash and 32 MB PSRAM
+instead of 16 and 8). Memory then allows a much larger model; compute is the limit. On the S3 the 13 M model needs
+1.54 s of compute per second of speech on one core (1.19 on two, README). Estimate for the P4, not measured (no board
+yet): 1.7× the clock, the same 128-bit vector width, 2–3× faster PSRAM, but the P4 port lacks the S3's fastest matrix
+kernel and runs on one core, so about 0.7–0.9 on one core and 0.55–0.7 on two. Compute grows with depth, so a model
+1.5× larger (about 0.8–1.3) is the largest likely to keep up with live streaming. The S3 numbers are measured; the P4
+numbers are an estimate to check on the board.
+
+**Method:** depth up-scaling (`train/grow_nemo.py`). The shipped 16-layer model gets 8 new layers, one after every
+second old layer (new positions 2, 5, 8, 11, 14, 17, 20, 23 of 24), 13 → 19 M parameters. Each new layer is a copy of the
+layer before it with the output projections of its four residual branches (both feed-forward modules, attention,
+convolution) set to zero. It then only re-applies the copied layer's final LayerNorm, so the grown model starts close
+to, but not exactly at, the old one. Width, heads, kernel and tokenizer are unchanged; the engine and `.tnm` format
+already read the depth from the header (`export_nemo.py` used to write 16 and 176 as constants, now it writes the
+model's sizes).
+
+**Settings:** identical to atyp2 (`train/runs/big1.cmd`), so the difference to atyp2 measures depth alone. The grown
+model is also evaluated before training, to measure what inserting the layers costs.
+
+**What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
+per second of speech for both models; big1 is only useful if it stays under 1.0.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
