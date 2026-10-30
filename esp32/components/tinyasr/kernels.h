@@ -50,3 +50,8 @@ void tasr_gemm_blk16(const int8_t *tile, int kp, const int8_t *x, int ldq, int T
 // out[t] = dot48(q, x + t*ldx) (both 16-byte aligned)
 void tasr_gemm_s8_xr(const int8_t *W, int kp, int nb, const int8_t *x, int ldq, int T, int32_t *acc);
 void tasr_dot48_rows(const int8_t *q, const int8_t *x, int ldx, int T, int32_t *out);
+
+// ESP32-P4 builds with CONFIG_TASR_P4_PIE: checks the vector kernels against plain C once at boot; call it before the
+// first inference. A failing kernel switches the vector path off (the engine runs on C).
+void tasr_p4_selftest(void);
+extern int tasr_p4_ok;

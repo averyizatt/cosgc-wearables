@@ -15,6 +15,15 @@
 #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3) && !defined(TASR_NO_SIMD)
 #define TASR_PIE 1
 #endif
+// ESP32-P4 PIE (RISC-V, esp.* instructions): see the "ESP32-P4" blocks below and tasr_p4_selftest(). Not tested on
+// hardware: every kernel is checked against a plain-C reference at boot and the vector path is switched off if one differs.
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32P4) && defined(CONFIG_TASR_P4_PIE) && !defined(TASR_NO_SIMD)
+#define TASR_P4 1
+#endif
+#ifdef TASR_P4
+int tasr_p4_ok = 1;         // 0: a boot self-test failed, every P4 kernel runs its C reference
+int tasr_p4_qacc_mode = 0;  // layout of the QACC store: 1 = 16 x int32, 2 = 8 x 20-bit lanes per half (ESP32-S3 packing)
+#endif
 
 // round-to-nearest-even via the 1.5*2^23 trick (matches torch.round), valid for |x| < 2^22
 static inline int rne(float x)
@@ -159,6 +168,60 @@ TASR_DOT_ATTR __attribute__((noinline, optimize("no-branch-count-reg"))) void ta
     }
 }
 #endif
+#elif defined(TASR_P4)
+static void ref_dot_rows_s8(const int8_t *w, const int8_t *x, int ldq, int T, int kp, int32_t *out)
+{
+    for (int t = 0; t < T; t++) {
+        const int8_t *a = x + (size_t)t * ldq;
+        int32_t acc = 0;
+        for (int i = 0; i < kp; i++) acc += (int32_t)a[i] * (int32_t)w[i];
+        out[t] = acc;
+    }
+}
+// ESP32-P4 PIE: esp.vmulas.s8.xacc multiplies 16 int8 pairs into the 40-bit XACC accumulator (the S3's ACCX); the
+// software-pipelined loop is the S3 kernel's, with a counter and a branch where the S3 has loopnez
+void tasr_dot_rows_s8(const int8_t *w, const int8_t *x, int ldq, int T, int kp, int32_t *out)
+{
+    if (!tasr_p4_ok) { ref_dot_rows_s8(w, x, ldq, T, kp, out); return; }
+    const int n = kp >> 4;
+    for (int t = 0; t < T; t++) {
+        register const int8_t *pa __asm__("a3") = x + (size_t)t * ldq;  // PIE address operands must be x8..x15
+        register const int8_t *pb __asm__("a4") = w;
+        int m = n;
+        register int32_t r __asm__("a5");
+        __asm__ volatile("esp.zero.xacc\n" ::: "memory");
+        if (m & 1) {
+            __asm__ volatile(
+                "esp.vld.128.ip q0, %0, 16\n"
+                "esp.vld.128.ip q1, %1, 16\n"
+                "esp.vmulas.s8.xacc q0, q1\n"
+                : "+r"(pa), "+r"(pb) : : "memory");
+            m -= 1;
+        }
+        if (m) {
+            int pairs = m >> 1;
+            __asm__ volatile(
+                "esp.vld.128.ip q0, %0, 16\n"
+                "esp.vld.128.ip q1, %1, 16\n"
+                "addi %2, %2, -1\n"
+                "beqz %2, 2f\n"
+                "1:\n"
+                "  esp.vld.128.ip q2, %0, 16\n"
+                "  esp.vmulas.s8.xacc.ld.ip q3, %1, 16, q0, q1\n"
+                "  esp.vld.128.ip q0, %0, 16\n"
+                "  esp.vmulas.s8.xacc.ld.ip q1, %1, 16, q2, q3\n"
+                "  addi %2, %2, -1\n"
+                "  bnez %2, 1b\n"
+                "2:\n"
+                "esp.vld.128.ip q2, %0, 16\n"
+                "esp.vmulas.s8.xacc.ld.ip q3, %1, 16, q0, q1\n"
+                "esp.vmulas.s8.xacc q2, q3\n"
+                : "+r"(pa), "+r"(pb), "+r"(pairs) : : "memory");
+        }
+        __asm__ volatile("esp.movx.r.xacc.l %0\n" : "=r"(r));
+        out[t] = r;
+    }
+}
 #else
 void tasr_dot_rows_s8(const int8_t *w, const int8_t *x, int ldq, int T, int kp, int32_t *out)
 {
@@ -206,13 +269,18 @@ __attribute__((noinline, optimize("no-branch-count-reg"))) void tasr_unpack_s4(c
         : "memory");
 }
 #else
+// 4 bytes at a time: lo / hi nibbles, minus the +8 offset without borrows between bytes: ((x | 0x80) - 8) ^ 0x80
 void tasr_unpack_s4(const uint8_t *src, int8_t *dst, int kp)
 {
     for (int blk = 0; blk < kp; blk += 32) {
-        for (int j = 0; j < 16; j++) {
-            uint8_t v = src[j];
-            dst[blk + j] = (int8_t)((v & 15) - 8);
-            dst[blk + j + 16] = (int8_t)((v >> 4) - 8);
+        for (int j = 0; j < 16; j += 4) {
+            uint32_t v;
+            memcpy(&v, src + j, 4);
+            uint32_t lo = v & 0x0F0F0F0Fu, hi = (v >> 4) & 0x0F0F0F0Fu;
+            lo = ((lo | 0x80808080u) - 0x08080808u) ^ 0x80808080u;
+            hi = ((hi | 0x80808080u) - 0x08080808u) ^ 0x80808080u;
+            memcpy(dst + blk + j, &lo, 4);
+            memcpy(dst + blk + j + 16, &hi, 4);
         }
         src += 16;
     }
@@ -607,6 +675,99 @@ __attribute__((noinline, optimize("no-branch-count-reg"))) void tasr_gemm_blk16(
         qacc_extract16(out + (size_t)t * 16);
     }
 }
+#elif defined(TASR_P4)
+static void ref_gemm_blk16(const int8_t *tile, int kp, const int8_t *x, int ldq, int T, int32_t *out)
+{
+    for (int t = 0; t < T; t++) {
+        const int8_t *px = x + (size_t)t * ldq;
+        int32_t acc[16] = {0};
+        for (int k = 0; k < kp; k++) {
+            const int32_t xv = px[k];
+            const int8_t *w = tile + (size_t)k * 16;
+            for (int j = 0; j < 16; j++) acc[j] += xv * (int32_t)w[j];
+        }
+        for (int j = 0; j < 16; j++) out[(size_t)t * 16 + j] = acc[j];
+    }
+}
+// QACC -> 16 int32. The four 128-bit stores fill buf[0..63]; how the lanes sit in them is not something we could
+// confirm without a board, so tasr_p4_selftest() tries both layouts below and keeps the one that matches the C
+// reference (and prints the raw bytes if neither does).
+static inline void qacc_store64(uint8_t *buf)
+{
+    register uint8_t *p __asm__("a5") = buf;  // PIE address operands must be x8..x15
+    __asm__ volatile(
+        "esp.st.qacc.l.l.128.ip %0, 16\n"
+        "esp.st.qacc.l.h.128.ip %0, 16\n"
+        "esp.st.qacc.h.l.128.ip %0, 16\n"
+        "esp.st.qacc.h.h.128.ip %0, 16\n"
+        : "+r"(p) : : "memory");
+}
+static void qacc_decode(const uint8_t *buf, int mode, int32_t *o)
+{
+    if (mode == 1) {
+        memcpy(o, buf, 64);
+        return;
+    }
+    for (int h = 0; h < 2; h++) {  // mode 2: the ESP32-S3 packing, 8 x 20-bit two's complement lanes in 160 bits
+        uint32_t w[5];
+        memcpy(w, buf + 32 * h, 20);
+        int32_t *d = o + 8 * h;
+        d[0] = ((int32_t)(w[0] << 12)) >> 12;
+        d[1] = ((int32_t)(((w[0] >> 20) | (w[1] << 12)) << 12)) >> 12;
+        d[2] = ((int32_t)((w[1] >> 8) << 12)) >> 12;
+        d[3] = ((int32_t)(((w[1] >> 28) | (w[2] << 4)) << 12)) >> 12;
+        d[4] = ((int32_t)(((w[2] >> 16) | (w[3] << 16)) << 12)) >> 12;
+        d[5] = ((int32_t)((w[3] >> 4) << 12)) >> 12;
+        d[6] = ((int32_t)(((w[3] >> 24) | (w[4] << 8)) << 12)) >> 12;
+        d[7] = ((int32_t)((w[4] >> 12) << 12)) >> 12;
+    }
+}
+static void blk16_pie(const int8_t *tile, int kp, const int8_t *x, int ldq, int T, int32_t *out, int mode, uint8_t *dump)
+{
+    const int nkb = kp >> 4;
+    uint8_t buf[64] __attribute__((aligned(16)));
+    for (int t = 0; t < T; t++) {
+        register const int8_t *px __asm__("a3") = x + (size_t)t * ldq;  // PIE address operands must be x8..x15
+        register const int8_t *pw __asm__("a4") = tile;
+        __asm__ volatile("esp.zero.qacc\n" ::: "memory");
+        int n = nkb;
+        // the S3 kernel's schedule: tile rows rotate through q0..q3, each loaded three instructions before its use
+        // (the last step loads three rows past the tile: callers pad tiles by 64 bytes)
+        __asm__ volatile(
+            "esp.vld.128.ip q0, %1, 16\n"
+            "esp.vld.128.ip q1, %1, 16\n"
+            "esp.vld.128.ip q2, %1, 16\n"
+            "1:\n"
+            "  esp.vld.128.ip q7, %0, 16\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 0\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 1\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 2\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 3\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 4\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 5\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 6\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 7\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 8\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 9\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 10\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 11\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q3, %1, q0, q7, 12\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q0, %1, q1, q7, 13\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q1, %1, q2, q7, 14\n"
+            "  esp.vsmulas.s8.qacc.ld.incp q2, %1, q3, q7, 15\n"
+            "  addi %2, %2, -1\n"
+            "  bnez %2, 1b\n"
+            : "+r"(px), "+r"(pw), "+r"(n) : : "memory");
+        qacc_store64(buf);
+        if (dump) memcpy(dump, buf, 64);
+        qacc_decode(buf, mode, out + (size_t)t * 16);
+    }
+}
+void tasr_gemm_blk16(const int8_t *tile, int kp, const int8_t *x, int ldq, int T, int32_t *out)
+{
+    if (!tasr_p4_ok || !tasr_p4_qacc_mode || kp <= 0) { ref_gemm_blk16(tile, kp, x, ldq, T, out); return; }
+    blk16_pie(tile, kp, x, ldq, T, out, tasr_p4_qacc_mode, NULL);
+}
 #else
 void tasr_gemm_blk16(const int8_t *tile, int kp, const int8_t *x, int ldq, int T, int32_t *out)
 {
@@ -647,6 +808,39 @@ __attribute__((noinline, optimize("no-branch-count-reg"))) void tasr_dot48_rows(
             "ee.vmulas.s8.accx q4, q1\n"
             "ee.vmulas.s8.accx q5, q2\n"
             "rur.accx_0 %0\n"
+            : "=r"(r), "+r"(px) : : "memory");
+        out[t] = r;
+    }
+}
+#elif defined(TASR_P4)
+void tasr_dot48_rows(const int8_t *q, const int8_t *x, int ldx, int T, int32_t *out)
+{
+    if (!tasr_p4_ok) {
+        for (int t = 0; t < T; t++) {
+            const int8_t *a = x + (size_t)t * ldx;
+            int32_t acc = 0;
+            for (int i = 0; i < 48; i++) acc += (int32_t)a[i] * (int32_t)q[i];
+            out[t] = acc;
+        }
+        return;
+    }
+    register const int8_t *pq __asm__("a3") = q;
+    __asm__ volatile(
+        "esp.vld.128.ip q0, %0, 16\n"
+        "esp.vld.128.ip q1, %0, 16\n"
+        "esp.vld.128.ip q2, %0, 16\n"
+        : "+r"(pq) : : "memory");
+    for (int t = 0; t < T; t++) {
+        register const int8_t *px __asm__("a4") = x + (size_t)t * ldx;
+        register int32_t r __asm__("a5");
+        __asm__ volatile(
+            "esp.zero.xacc\n"
+            "esp.vld.128.ip q3, %1, 16\n"
+            "esp.vld.128.ip q4, %1, 16\n"
+            "esp.vmulas.s8.xacc.ld.ip q5, %1, 16, q3, q0\n"
+            "esp.vmulas.s8.xacc q4, q1\n"
+            "esp.vmulas.s8.xacc q5, q2\n"
+            "esp.movx.r.xacc.l %0\n"
             : "=r"(r), "+r"(px) : : "memory");
         out[t] = r;
     }
@@ -825,6 +1019,15 @@ __attribute__((noinline, optimize("no-branch-count-reg"))) void tasr_gemm_s8_xr(
         }
     }
 }
+#elif defined(TASR_P4)
+void tasr_gemm_s8_xr(const int8_t *W, int kp, int nb, const int8_t *x, int ldq, int T, int32_t *acc)
+{
+    int32_t col[64];  // T <= 64 in every caller
+    for (int j = 0; j < nb; j++) {  // one weight row against all T activation rows: the row stays in the cache
+        tasr_dot_rows_s8(W + (size_t)j * kp, x, ldq, T, kp, col);
+        for (int t = 0; t < T; t++) acc[(size_t)t * nb + j] = col[t];
+    }
+}
 #else
 void tasr_gemm_s8_xr(const int8_t *W, int kp, int nb, const int8_t *x, int ldq, int T, int32_t *acc)
 {
@@ -835,5 +1038,73 @@ void tasr_gemm_s8_xr(const int8_t *W, int kp, int nb, const int8_t *x, int ldq, 
             for (int i = 0; i < kp; i++) s += (int32_t)a[i] * (int32_t)w[i];
             acc[(size_t)t * nb + j] = s;
         }
+}
+#endif
+
+#ifdef TASR_P4
+#include <stdio.h>
+// Boot self-test of the ESP32-P4 vector kernels against plain C. Prints P4SELFTEST lines; on a mismatch the vector path
+// is switched off (tasr_p4_ok = 0) and the engine continues on C, slower but correct.
+static uint32_t st_rng = 12345u;
+static int8_t st_s8(void)
+{
+    st_rng = st_rng * 1664525u + 1013904223u;
+    return (int8_t)((st_rng >> 24) - 128);
+}
+void tasr_p4_selftest(void)
+{
+    enum { KP = 96, T = 7, TILE = 64 };
+    static int8_t w[16 * KP + TILE] __attribute__((aligned(16)));
+    static int8_t x[T * KP + TILE] __attribute__((aligned(16)));
+    static int32_t a[T * 16], b[T * 16];
+    for (size_t i = 0; i < sizeof(w); i++) w[i] = st_s8() / 2;  // int4-sized weights, like the blocked layers
+    for (size_t i = 0; i < sizeof(x); i++) x[i] = st_s8();
+    int ok = 1;
+    ref_dot_rows_s8(w, x, KP, T, KP, b);
+    tasr_dot_rows_s8(w, x, KP, T, KP, a);
+    for (int t = 0; t < T; t++) if (a[t] != b[t]) ok = 0;
+    printf("P4SELFTEST dot_rows_s8 %s (%d vs %d)\n", ok ? "PASS" : "FAIL", (int)a[0], (int)b[0]);
+    int ok2 = 1;
+    {
+        int32_t r[T];
+        for (int t = 0; t < T; t++) { int32_t s = 0; for (int i = 0; i < 48; i++) s += (int32_t)x[t * KP + i] * w[i]; r[t] = s; }
+        tasr_dot48_rows(w, x, KP, T, a);
+        for (int t = 0; t < T; t++) if (a[t] != r[t]) ok2 = 0;
+    }
+    printf("P4SELFTEST dot48_rows %s\n", ok2 ? "PASS" : "FAIL");
+    int ok3 = 1;
+    {
+        static int32_t xa[T * 16];
+        tasr_gemm_s8_xr(w, KP, 16, x, KP, T, xa);
+        for (int t = 0; t < T; t++) for (int j = 0; j < 16; j++) {
+            int32_t s = 0;
+            for (int i = 0; i < KP; i++) s += (int32_t)x[t * KP + i] * w[j * KP + i];
+            if (xa[t * 16 + j] != s) ok3 = 0;
+        }
+    }
+    printf("P4SELFTEST gemm_s8_xr %s\n", ok3 ? "PASS" : "FAIL");
+    // blk16: tile is [KP][16]; try the two QACC layouts
+    ref_gemm_blk16(w, KP, x, KP, T, b);
+    tasr_p4_qacc_mode = 0;
+    uint8_t dump[64] = {0};
+    for (int mode = 1; mode <= 2 && !tasr_p4_qacc_mode; mode++) {
+        blk16_pie(w, KP, x, KP, T, a, mode, dump);
+        int same = 1;
+        for (int i = 0; i < T * 16; i++) if (a[i] != b[i]) same = 0;
+        if (same) tasr_p4_qacc_mode = mode;
+    }
+    printf("P4SELFTEST gemm_blk16 %s (QACC layout %d)\n", tasr_p4_qacc_mode ? "PASS" : "FAIL", tasr_p4_qacc_mode);
+    if (!tasr_p4_qacc_mode) {
+        printf("P4SELFTEST QACC raw after the last row:");
+        for (int i = 0; i < 64; i++) printf(" %02x", dump[i]);
+        printf("\nP4SELFTEST expected out[T-1][0..3]: %d %d %d %d\n", (int)b[(T - 1) * 16], (int)b[(T - 1) * 16 + 1],
+               (int)b[(T - 1) * 16 + 2], (int)b[(T - 1) * 16 + 3]);
+    }
+    if (!(ok && ok2 && ok3)) {
+        tasr_p4_ok = 0;
+        printf("P4SELFTEST FAILED: the P4 vector kernels are off, running plain C\n");
+    } else {
+        printf("P4SELFTEST ok: vector kernels on%s\n", tasr_p4_qacc_mode ? "" : " (blk16 on C)");
+    }
 }
 #endif

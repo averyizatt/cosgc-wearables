@@ -17,6 +17,7 @@
 #include "tasr_nemo.h"
 #include "tasr_seg.h"
 #include "api.h"
+#include "codec.h"
 #include "led.h"
 #include "mic.h"
 #include "oled.h"
@@ -125,12 +126,21 @@ static void mic_start(void)
     i2s_std_config_t sc = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {.mclk = I2S_GPIO_UNUSED, .bclk = CONFIG_TASR_I2S_BCLK, .ws = CONFIG_TASR_I2S_WS,
+        .gpio_cfg = {
+#ifdef CONFIG_TASR_MIC_CODEC
+                     .mclk = CONFIG_TASR_I2S_MCLK,
+#else
+                     .mclk = I2S_GPIO_UNUSED,
+#endif
+                     .bclk = CONFIG_TASR_I2S_BCLK, .ws = CONFIG_TASR_I2S_WS,
                      .dout = I2S_GPIO_UNUSED, .din = CONFIG_TASR_I2S_DIN},
     };
-    sc.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;  // INMP441 with L/R tied to GND
+    sc.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;  // INMP441 with L/R tied to GND; the ES8311 puts the microphone on the left too
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(g_rx, &sc));
     ESP_ERROR_CHECK(i2s_channel_enable(g_rx));
+#ifdef CONFIG_TASR_MIC_CODEC
+    codec_start();  // needs MCLK running, so after the I2S clocks start; an error is logged and the level bar shows silence
+#endif
     uint8_t *storage = heap_caps_malloc(RING_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM);
     static StaticStreamBuffer_t sb;
     g_ring = xStreamBufferCreateStatic(RING_SAMPLES * 2, 2, storage, &sb);

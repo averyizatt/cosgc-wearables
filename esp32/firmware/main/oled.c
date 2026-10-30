@@ -1,6 +1,7 @@
 // SSD1306 driver + render task. The ASR code only copies strings under a mutex and notifies the task, so a display
 // update (1 KB over I2C at 400 kHz, ~25 ms) never blocks recognition.
 #include "oled.h"
+#include "codec.h"
 #include <stdio.h>
 #include <string.h>
 #include "sdkconfig.h"
@@ -79,12 +80,8 @@ void oled_level(float dbfs)
 void oled_start(void)
 {
     if (s_task) return;
-    i2c_master_bus_config_t bc = {
-        .i2c_port = I2C_NUM_0, .sda_io_num = CONFIG_TASR_OLED_SDA, .scl_io_num = CONFIG_TASR_OLED_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
-    };
-    i2c_master_bus_handle_t bus;
-    if (i2c_new_master_bus(&bc, &bus) != ESP_OK) { ESP_LOGE(TAG, "I2C bus init failed"); return; }
+    i2c_master_bus_handle_t bus = tasr_i2c_bus(CONFIG_TASR_OLED_SDA, CONFIG_TASR_OLED_SCL);  // shared with the codec, if any
+    if (!bus) { ESP_LOGE(TAG, "I2C bus init failed"); return; }
     i2c_device_config_t dc = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = CONFIG_TASR_OLED_ADDR,
                               .scl_speed_hz = 400000};
     if (i2c_master_bus_add_device(bus, &dc, &s_dev) != ESP_OK) { ESP_LOGE(TAG, "I2C device add failed"); return; }

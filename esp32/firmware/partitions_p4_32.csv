@@ -1,0 +1,8 @@
+# ESP32-P4-Pico: 32 MB flash. Model, LM and clips sit where the 16 MB layout has them, relative sizes unchanged but with
+# room to grow: 16 MB for the model (a larger one fits), 4 MB for the LM, about 9 MB left over at the end.
+nvs,      data, nvs,     0x9000,    0x6000
+phy_init, data, phy,     0xf000,    0x1000
+factory,  app,  factory, 0x10000,   0x200000
+model,    data, 0x40,    0x210000,  0x1000000
+lm,       data, 0x42,    0x1210000, 0x400000
+audio,    data, 0x41,    0x1610000, 0x100000

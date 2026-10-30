@@ -84,3 +84,11 @@ esp32/firmware/main/ble.c, ble.h, sdkconfig.ble, sdkconfig.ble_dev, sdkconfig.l1
 docs/API.md; LICENSING.md. The README was rewritten for this project; Oído's original is kept as README.upstream.md.
 
 The models are unchanged.
+- ESP32-P4 port (Waveshare ESP32-P4-Pico), October 2026: kernels.c/kernels.h (P4 vector kernels, boot self-test, faster
+  portable int4 unpack), main.c, mic.c, oled.c, Kconfig.projbuild, CMakeLists.txt (codec microphone, S3-only code guarded),
+  and the new files esp32/firmware/main/codec.c and codec.h, esp32/firmware/sdkconfig.p4,
+  esp32/firmware/partitions_p4_32.csv, boards/waveshare_esp32_p4_pico.json, docs/P4.md, docs/ATYPICAL_SPEECH.md.
+
+esp32/firmware/main/codec.c follows the register sequence of Espressif's ES8311 driver (espressif/es8311 in esp-bsp,
+Apache License 2.0, https://github.com/espressif/esp-bsp/tree/master/components/es8311), rewritten for the new ESP-IDF I2C
+master API and fixed to 16 kHz microphone capture. No code of that driver is included.

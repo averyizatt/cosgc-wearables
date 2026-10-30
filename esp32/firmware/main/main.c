@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_cpu.h"
+#include "kernels.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_log.h"
@@ -88,7 +89,7 @@ static void par_for(tasr_job_fn fn, void *ctx, int n)
     xSemaphoreTake(g_done, portMAX_DELAY);
 }
 #endif
-#define CPU_HZ 240000000.0
+#define CPU_HZ (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1e6)
 
 // internal RAM kept free when the engine asks for a hot work buffer: I2S DMA, the mic / OLED task stacks and their
 // buffers are allocated before the engine's buffers, so this only needs to cover later runtime allocations. A Wi-Fi or
@@ -137,7 +138,11 @@ static void calibrate(void)
     // 4M single-cycle NOPs (+ loop setup): on silicon cycles ~= 4.0M; under QEMU -icount this gives cycles/instruction
     uint32_t c0 = esp_cpu_get_cycle_count();
     int64_t t0 = esp_timer_get_time();
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
     __asm__ volatile("movi a8, 1000000\n loop a8, 1f\n nop\n nop\n nop\n nop\n 1:\n" ::: "a8");
+#else  // RISC-V (ESP32-P4): 1M iterations of 4 nops; not cycle-exact like the S3 zero-overhead loop
+    for (volatile int i = 0; i < 1000000; i++) __asm__ volatile("nop\n nop\n nop\n nop\n");
+#endif
     uint32_t dc = esp_cpu_get_cycle_count() - c0;
     printf("CALIB 4M nops: cycles %u, time %lld us\n", (unsigned)dc, esp_timer_get_time() - t0);
 }
@@ -191,7 +196,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     budget = 0;
 #endif
     size_t moved = tasr_nemo_place_weights(m, budget);
-#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3)  // S3 cache registers
     extern void dcache_autoload_psram(uintptr_t lo, uintptr_t hi);
     if (moved && g_ps_hi > g_ps_lo) dcache_autoload_psram(g_ps_lo, g_ps_hi);  // the weights copied to PSRAM
 #endif
@@ -287,7 +292,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     printf("DONE\n");
 }
 
-#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3)  // S3 cache registers
 #include "soc/extmem_reg.h"
 #include "soc/soc.h"
 // Experiment: the data cache's hardware prefetch ("autoload", off after boot) over the model's flash mapping: on a
@@ -325,6 +330,9 @@ void app_main(void)
     led_start();  // dim blue while the model loads
     calibrate();
     tasr_alloc = fw_alloc;
+#ifdef CONFIG_TASR_P4_PIE
+    tasr_p4_selftest();
+#endif
     tasr_free = fw_free;
 #ifndef TASR_SINGLE_CORE
     g_start = xSemaphoreCreateBinary();
@@ -337,7 +345,7 @@ void app_main(void)
     const uint8_t *mflash = map_partition(0x40, "model", &msize);
     const uint8_t *aud = map_partition(0x41, "audio", &asize);
     if (!mflash) { ESP_LOGE(TAG, "model partition missing"); return; }
-#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0
+#if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3)
     dcache_autoload(mflash, msize);
 #endif
 #ifdef CONFIG_TASR_KERNEL_BENCH

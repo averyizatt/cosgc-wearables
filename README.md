@@ -91,6 +91,13 @@ audio, so treat this as a guide only.
 **Not measured yet:** speech of people who stutter or have dysarthria, accented speech, noisy rooms. The model is trained
 on typical read speech; for atypical speech the next step is fine-tuning on recordings of the people it is for.
 
+## ESP32-P4 (in progress)
+
+A port to the Waveshare **ESP32-P4-Pico** (32 MB PSRAM and flash, onboard microphone) builds but **has not run on a board**: the
+firmware environment `oido_p4`, the codec microphone driver, and vector kernels with a boot self-test that falls back to plain C. See
+[docs/P4.md](docs/P4.md). How the extra memory could be used, and options for models for atypical speech (stuttering, dysarthria):
+[docs/P4.md](docs/P4.md#what-the-extra-memory-can-buy) and [docs/ATYPICAL_SPEECH.md](docs/ATYPICAL_SPEECH.md).
+
 ## Device API
 
 ```

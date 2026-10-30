@@ -16,10 +16,42 @@ menu "tinyasr"
     config TASR_I2S_DIN
         int "I2S data-in (SD) GPIO"
         default 6
+    config TASR_MIC_CODEC
+        bool "Microphone through an ES8311 codec (e.g. Waveshare ESP32-P4-Pico) instead of a bare I2S MEMS mic"
+        default n
+        help
+            The codec is set up over I2C (16 kHz, MCLK 256 x fs, I2S slave) and the microphone data come on the same I2S
+            port. UNVERIFIED on hardware: written from Espressif's es8311 driver and Waveshare's pin table.
+    config TASR_I2S_MCLK
+        int "I2S MCLK GPIO (codec only)"
+        default 13
+        depends on TASR_MIC_CODEC
+    config TASR_CODEC_I2C_SDA
+        int "Codec I2C SDA GPIO"
+        default 7
+        depends on TASR_MIC_CODEC
+    config TASR_CODEC_I2C_SCL
+        int "Codec I2C SCL GPIO"
+        default 8
+        depends on TASR_MIC_CODEC
+    config TASR_CODEC_ADDR
+        hex "Codec I2C address"
+        default 0x18
+        depends on TASR_MIC_CODEC
+    config TASR_CODEC_MIC_GAIN
+        int "Codec microphone gain in steps of 6 dB (0-7)"
+        default 4
+        range 0 7
+        depends on TASR_MIC_CODEC
+    config TASR_PA_GPIO
+        int "Speaker amplifier enable GPIO, driven low (off) at start; -1 = leave alone"
+        default -1
+        range -1 54
+        depends on TASR_MIC_CODEC
     config TASR_PTT_GPIO
         int "Push-to-talk button GPIO (button to GND, internal pull-up); -1 = none"
         default -1
-        range -1 48
+        range -1 54
         help
             With a button, an utterance is what you say while holding it (plus 0.3 s from before the press) and the
             final text comes as soon as it is released, with no end-of-speech pause; noise is never transcribed.
@@ -64,7 +96,7 @@ menu "tinyasr"
     config TASR_LED_GPIO
         int "Status LED: addressable RGB LED (WS2812) GPIO; -1 = none"
         default -1
-        range -1 48
+        range -1 54
         help
             GPIO48 on ESP32-S3-DevKitC-1 v1.0 (and most N16R8 clones), GPIO38 on v1.1. Dim blue: loading; dim green:
             ready; blue: hearing you; amber: computing the final text; green flash: text ready; red flash: nothing
@@ -94,6 +126,15 @@ menu "tinyasr"
         help
             Prints KBENCH lines: cycles per multiply-accumulate for each placement. If PSRAM and flash are close to
             internal RAM, the kernels are not waiting for weights.
+
+    config TASR_P4_PIE
+        bool "ESP32-P4: vector (PIE) kernels, checked against plain C at boot"
+        default n
+        depends on IDF_TARGET_ESP32P4
+        help
+            int8 dot products and the int4 GEMM on the P4's PIE instructions. NOT TESTED ON HARDWARE: at boot
+            tasr_p4_selftest() compares each kernel with plain C and switches the vector path off if one differs
+            (look for P4SELFTEST lines on the console). If the board crashes before that, turn this off.
 
     config TASR_O3
         bool "Compile the engine with -O3 -funroll-loops instead of -O2"

@@ -74,3 +74,10 @@ The chip runs at about 2x real time on one core, so longer sentences take longer
   speech (or loud noise the VAD takes for speech) it falls behind; after about 16 s of backlog it drops audio, which costs words.
   The next line says how much was lost. Pause between sentences, or keep the mic away from constant noise.
 - **Nothing appears on serial.** Check that you are on the UART port. On the native USB port, follow the notes in the README.
+
+## ESP32-P4 (Waveshare ESP32-P4-Pico)
+
+Not tested on hardware. No wiring is needed for the microphone: it is on the board (ES8311 codec, I2C SDA 7 / SCL 8, I2S MCLK 13 /
+SCLK 12 / LRCK 10 / data 11). Build with `pio run -e oido_p4`. A push-to-talk button (to GND) and an I2C OLED (SDA 7, SCL 8, address
+0x3C, shared with the codec) can be added on the 40-pin header; set `CONFIG_TASR_PTT_GPIO` and `CONFIG_TASR_OLED*` in
+`esp32/firmware/sdkconfig.p4`. Full notes, the bring-up checklist and what is unverified: [docs/P4.md](docs/P4.md).
