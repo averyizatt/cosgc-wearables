@@ -1,6 +1,6 @@
 # Plan for the second atypical-speech fine-tune
 
-Status: draft, 2026-10-30. Follows the first run (`atyp1`, results in [DATA.md](DATA.md#results-so-far)). Nothing in
+Status: steps 1–2 done or running, 2026-10-30; results go in [EXPERIMENTS.md](EXPERIMENTS.md). Follows the first run (`atyp1`, results in [DATA.md](DATA.md#results-so-far)). Nothing in
 this plan has been run yet; the training PC went offline before the step-1 test runs finished.
 
 ## Summary
