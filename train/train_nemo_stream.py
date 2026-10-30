@@ -232,6 +232,7 @@ def main():
     ap.add_argument("--aug_dir", default="", help="noise bank + RIRs built by augment.py (MUSAN noise/music/babble, reverb)")
     ap.add_argument("--p_noise", type=float, default=0.6)
     ap.add_argument("--p_rir", type=float, default=0.3)
+    ap.add_argument("--p_speed", type=float, default=0.0, help="speed perturbation 0.9x / 1.1x (needs --aug_dir)")
     a = ap.parse_args()
     dev = "cuda"
     os.makedirs(a.out, exist_ok=True)
@@ -293,8 +294,8 @@ def main():
     aug = None
     if a.aug_dir:
         from augment import NpAug
-        aug = NpAug(a.aug_dir, a.p_noise, a.p_rir)  # applied per utterance inside the DataLoader workers
-        print("augmentation: noise/music/babble p", a.p_noise, "reverb p", a.p_rir, flush=True)
+        aug = NpAug(a.aug_dir, a.p_noise, a.p_rir, p_speed=a.p_speed)  # per utterance inside the DataLoader workers
+        print("augmentation: noise/music/babble p", a.p_noise, "reverb p", a.p_rir, "speed p", a.p_speed, flush=True)
     chunks = [int(c) for c in a.chunks.split(",")]
     lefts = [int(c) for c in a.lefts.split(",")]
 

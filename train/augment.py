@@ -70,8 +70,8 @@ def build_rirs(out, n=400, length=16000, seed=0):
 class NpAug:
     """Per-utterance augmentation in numpy (runs inside the DataLoader workers): int16 in, int16 out."""
 
-    def __init__(self, d, p_noise=0.6, p_rir=0.3, snr=(0.0, 20.0)):
-        self.d, self.p_noise, self.p_rir, self.snr = d, p_noise, p_rir, snr
+    def __init__(self, d, p_noise=0.6, p_rir=0.3, snr=(0.0, 20.0), p_speed=0.0):
+        self.d, self.p_noise, self.p_rir, self.snr, self.p_speed = d, p_noise, p_rir, snr, p_speed
         self.bank = None
 
     def _init(self):  # lazily, in the worker process
@@ -93,9 +93,12 @@ class NpAug:
     def __call__(self, a):
         if self.bank is None:
             self._init()
-        from scipy.signal import fftconvolve
-        L = len(a)
+        from scipy.signal import fftconvolve, resample_poly
         x = a.astype(np.float32) / 32768.0
+        if self.rng.random() < self.p_speed:  # speed perturbation 0.9x / 1.1x (tempo and pitch, as in Kaldi)
+            up, down = self.rng.choice(((10, 9), (10, 11)))
+            x = resample_poly(x, up, down).astype(np.float32)
+        L = len(x)
         if self.rng.random() < self.p_rir:  # reverberation, direct path kept aligned, level kept
             h = self.rirs[self.rng.randrange(len(self.rirs))]
             pk = int(np.abs(h).argmax())
