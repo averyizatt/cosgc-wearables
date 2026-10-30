@@ -65,9 +65,28 @@ The `us.openslr.org` mirror served a certificate for a different name on 2026-10
 |---|---|---|
 | `models/oido_stream.tnm` (as shipped) | see NOTICE (LibriSpeech, Common Voice, VoxPopuli, AMI, VCTK, People's Speech, OpenSLR 70/83, MUSAN) | yes, CC-BY-SA-4.0 |
 | `G:\cosgc\exp\smoke` (smoke test, 2026-10-29) | the above + LibriSpeech dev-clean (200 steps) | test only, never exported |
+| `G:\cosgc\exp\atyp1` (2026-10-29, 4000 steps) | the above + LibriSpeech train-clean-100 + TORGO (all but F03, M05, FC03, MC04) | test only: streaming on typical speech regressed (see below) |
 | anything fine-tuned with TORGO | + TORGO | **academic / non-profit only**; cite TORGO |
 
 Add a row for every model you export.
+
+### Results so far
+
+Word error rate in %, greedy decoding without LM (`train/eval_manifest.py`), as full utterance / streaming (chunk 32,
+left 128, as on the device). TORGO speakers below were never trained on.
+
+| Test | shipped model | atyp1 |
+|---|---|---|
+| TORGO F03 (dysarthric) | 49.5 / 57.0 | 38.2 / 49.3 |
+| TORGO M05 (dysarthric) | 80.0 / 89.7 | 64.3 / 74.8 |
+| TORGO FC03 (control) | 17.4 / 23.6 | 10.6 / 17.8 |
+| TORGO MC04 (control) | 16.5 / 21.7 | 12.0 / 18.5 |
+| TORGO single words | 54.6 / 59.8 | 32.4 / 39.5 |
+| TORGO sentences | 21.4 / 28.5 | 19.0 / 27.6 |
+| LibriSpeech test-clean | 4.0 / 6.2 | 4.6 / 9.7 |
+
+atyp1 (lr 1e-4, distillation 0.5, 4000 steps of 150 s batches) helps every TORGO speaker, mostly on single words, but
+its streaming error on typical speech rose by half within the first 500 steps and stayed there.
 
 ## Archive hashes
 
