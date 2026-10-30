@@ -53,7 +53,7 @@ The `us.openslr.org` mirror served a certificate for a different name on 2026-10
 | Dataset | Why not (yet) |
 |---|---|
 | Speech Accessibility Project (University of Illinois) | Needs an application and a data-use agreement. The largest and most useful atypical-speech dataset (Parkinson's, ALS, cerebral palsy, Down syndrome, stroke). **Worth applying now.** |
-| UASpeech | Download on request through a form. Mostly isolated words. |
+| UASpeech | Request by email to uaspeech-requests@lists.illinois.edu (https://speechtechnology.web.illinois.edu/uaspeech/), academic and government labs only, no commercial use. 16 speakers with dysarthria (cerebral palsy) plus controls, mostly isolated words. |
 | FluencyBank, AphasiaBank (TalkBank) | Need registration or membership. Stuttering and aphasia with transcripts. |
 | SEP-28k | Labels only, the audio has to be scraped from podcasts. Stutter events without transcripts. |
 | L2-ARCTIC | Request form, CC-BY-NC-4.0. Accented English. |
