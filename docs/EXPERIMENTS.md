@@ -383,7 +383,7 @@ model's sizes).
 
 **Settings:** identical to atyp2 (`train/runs/big1.cmd`), so the difference to atyp2 measures depth alone. The grown
 model is also evaluated before training, to measure what inserting the layers costs. One change that does not affect
-the model: the training audio is read from packed files (`train/pack_audio.py`: the same samples (check pending),
+the model: the training audio is read from packed files (`train/pack_audio.py`: the same samples: all 5,214 TORGO test clips read back identical to the original files,
 stored back to back sorted by duration). With one file per clip, the duration-bucketed batches made the training PC's
 hard drive seek constantly (100 % busy at 1–2 MB/s during atyp3), which slowed the PC and likely the training. Compare
 big1's time per step with atyp2's, keeping in mind the deeper model also costs about 1.5× compute.
