@@ -212,8 +212,39 @@ Before launch, the speed perturbation was checked with a 30-step run on TORGO wi
 | 1000 | 6.78 | 8.84 |
 | 1500 | 6.60 | 9.01 |
 | 2000 | 6.60 | 9.04 |
+| 2500 | 6.48 | 8.78 |
+| 3000 | 6.30 | 8.78 |
+| 3500 | 6.33 | 8.60 |
+| 4000 | 6.36 | 8.66 |
 
-Test results: to be added when the run finishes. Targets are in [TRAINING_PLAN.md](TRAINING_PLAN.md#step-3-what-counts-as-better).
+**Test results** (`atyp2_torgo_test.json`, `atyp2_ls_testclean_train.json`), against the targets in
+[TRAINING_PLAN.md](TRAINING_PLAN.md#step-3-what-counts-as-better):
+
+| Test (full / stream) | baseline | atyp1 | atyp2 | target (stream) | met? |
+|---|---|---|---|---|---|
+| LibriSpeech test-clean | 4.01 / 6.21 | 4.58 / 9.65 | **4.00 / 6.10** | ≤ 6.5 (full ≤ 4.3) | yes |
+| F03 | 49.5 / 57.0 | 38.2 / 49.3 | 39.8 / 48.8 | ≤ 50 | yes |
+| M05 | 80.0 / 89.7 | 64.3 / 74.8 | 68.9 / 78.3 | ≤ 76 | no (2.3 over) |
+| FC03 | 17.4 / 23.6 | 10.6 / 17.8 | 11.4 / 16.2 | ≤ 19 | yes |
+| MC04 | 16.5 / 21.7 | 12.0 / 18.5 | 11.9 / 17.0 | ≤ 19 | yes |
+| TORGO all | 30.8 / 37.3 | 22.7 / 30.9 | 23.9 / 30.1 | | |
+| single words | 54.6 / 59.8 | 32.4 / 39.5 | 35.3 / 41.2 | | |
+| sentences | 21.4 / 28.5 | 19.0 / 27.6 | 19.4 / 25.8 | < 27 | yes |
+
+**Findings:**
+
+9. Without distillation, the fine-tune keeps typical-speech accuracy fully (LibriSpeech streaming 6.21 → 6.10, full
+   4.01 → 4.00) while keeping most of atyp1's TORGO gains. In streaming mode, atyp2 is better than atyp1 on 3 of 4
+   speakers and on sentences; only the severe speaker M05 lost some of the gain (74.8 → 78.3).
+10. Streaming sentences improved more than in atyp1 (28.5 → 25.8, vs 27.6), and words a little less (41.2 vs 39.5),
+    consistent with TORGO's lower weight (2× instead of 3×).
+
+atyp2 meets 5 of 6 targets. It is the first candidate for export (int8 `.tnm`, stress test) and the reference that
+atyp3 is compared against.
+
+**Resources:** 3 loader processes used about 1.7 GB of RAM each and the main process about 4.3 GB, leaving about
+1.2 GB of the PC's 16 GB free; that was too little to use the PC at the same time. Run scripts now default to 2 loader
+processes and below-normal priority.
 
 ### E4. atyp3: atyp2 + simulated dysarthria (queued 2026-10-30)
 
