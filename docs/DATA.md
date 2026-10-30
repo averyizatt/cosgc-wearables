@@ -38,6 +38,20 @@ The `us.openslr.org` mirror served a certificate for a different name on 2026-10
 | Why | The only free, directly downloadable dysarthric speech corpus we found. Small (8 speakers), so it is best for adaptation and for **evaluation per speaker**, not as the only training data. |
 | Caveats | Much of it is single words and short prompts, not conversation. Some prompts are image descriptions without a transcript. Speakers' severity varies widely. Keep each speaker's held-out data separate, and never put the same speaker in both training and test when reporting results. |
 
+### UASpeech (dysarthric speech, cerebral palsy)
+
+| | |
+|---|---|
+| What | Isolated words from 15 speakers with cerebral palsy (F02–F04, M01, M04–M16; diagnosis and listener intelligibility per speaker in `doc/speaker_wordlist.xls`) and 13 control speakers (CF02–CF04, CM04–CM13). Per block (B1–B3): 10 digits, 26 letters (international radio alphabet), 19 computer commands, 100 common words, 100 uncommon words (different in each block). 7-channel microphone array (M2–M8). |
+| Source | University of Illinois, Statistical Speech Technology Group, https://speechtechnology.web.illinois.edu/uaspeech/. Access granted on request by email (2026-10-30); delivered as a private Google Drive folder. **The download link is not recorded here and must not be shared.** |
+| Terms (from `LICENSE.txt`) | Use only by researchers at academic or government labs. **Audio and video may not be redistributed outside our institution.** Training statistical models is explicitly allowed, and so is redistributing trained models, provided no original waveform segment can be reconstructed from them. Waveforms may be used in conference and journal presentations with the citation below. The University of Illinois name may not be used to endorse derived products. |
+| Citation required | Heejin Kim, Mark Hasegawa-Johnson, Adrienne Perlman, Jon Gunderson, Thomas Huang, Kenneth Watkin, Simone Frame, "Dysarthric Speech Database for Universal Access Research", Proc. Interspeech 2008, pp. 1741–1744. |
+| Files | `UASpeech_{original,normalized,noisereduce}_{C,FM}.tgz` (audio: control speakers C, dysarthric F/M; three processing versions), `UASpeech_video_{0,1}.tgz` (video, not used). Each archive includes `doc/` (lexicon, speaker metadata, the 2008 paper) and `mlf/` (file-to-word tables). |
+| Versions | `original` (raw), `normalized` (scaled to full range, used about 2012–2019), `noisereduce` (cleaned in 2020, lowest WER in the literature). |
+| Location | `G:\cosgc\data\UASpeech\UASpeech_<version>_<C or FM>\UASpeech\` |
+| Why | Speakers independent of TORGO, recorded with different equipment. Used first as a **test set** for models trained without it, then possibly for training. |
+| Caveats | Single words only. Usual split in the literature: blocks B1 and B3 train, B2 test (same speakers in both). For results on unseen speakers, split by speaker instead. File names: `<speaker>_<block>_<word>_<mic>.wav`. |
+
 ### MUSAN (noise, music and speech for augmentation)
 
 | | |
@@ -53,7 +67,6 @@ The `us.openslr.org` mirror served a certificate for a different name on 2026-10
 | Dataset | Why not (yet) |
 |---|---|
 | Speech Accessibility Project (University of Illinois) | Needs an application and a data-use agreement. The largest and most useful atypical-speech dataset (Parkinson's, ALS, cerebral palsy, Down syndrome, stroke). **Worth applying now.** |
-| UASpeech | Request by email to uaspeech-requests@lists.illinois.edu (https://speechtechnology.web.illinois.edu/uaspeech/), academic and government labs only, no commercial use. 16 speakers with dysarthria (cerebral palsy) plus controls, mostly isolated words. |
 | FluencyBank, AphasiaBank (TalkBank) | Need registration or membership. Stuttering and aphasia with transcripts. |
 | SEP-28k | Labels only, the audio has to be scraped from podcasts. Stutter events without transcripts. |
 | L2-ARCTIC | Request form, CC-BY-NC-4.0. Accented English. |
