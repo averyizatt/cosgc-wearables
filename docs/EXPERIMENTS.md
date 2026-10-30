@@ -209,7 +209,38 @@ Before launch, the speed perturbation was checked with a 30-step run on TORGO wi
 | 0 | 6.87 | 9.46 |
 | 500 | 6.57 | 9.10 |
 
+| 1000 | 6.78 | 8.84 |
+| 1500 | 6.60 | 9.01 |
+| 2000 | 6.60 | 9.04 |
+
 Test results: to be added when the run finishes. Targets are in [TRAINING_PLAN.md](TRAINING_PLAN.md#step-3-what-counts-as-better).
+
+### E4. atyp3: atyp2 + simulated dysarthria (queued 2026-10-30)
+
+**Question:** does distorting typical speech toward dysarthric traits help on real dysarthric speakers, beyond what
+TORGO alone gives? Free and needs no data agreement, so worth knowing for the paper either way.
+
+**Method** (`train/simdys.py`, `--p_dys 0.3`): 30 % of LibriSpeech clips (never TORGO clips) get a random subset of
+these distortions on their log-mel features, on the GPU:
+
+| distortion | probability | parameters | dysarthric trait it imitates |
+|---|---|---|---|
+| uneven slowing | 0.7 | 150–500 ms pieces each stretched 1.0–1.8×, pitch unchanged | slow, irregular rate |
+| time smoothing | 0.5 | moving average 30–90 ms, mixed 30–80 % | slurred transitions, imprecise articulation |
+| mel smoothing | 0.5 | 3 neighbouring bands, mixed 30–80 % | blurred formants / vowels |
+| tremor | 0.4 | loudness modulation 3–8 Hz, depth 10–40 % | vocal tremor, unsteady breath |
+| breathiness | 0.4 | envelope-following noise, tilted to high bands, 10–25 dB below speech | breathy voice |
+
+Not modeled: hypernasality, pitch breaks, monotone pitch, repetitions. This is a crude approximation.
+
+**Check before launch** (2026-10-30): 20 random rounds on 4 LibriSpeech clips: distorted clips got longer (e.g.
+1044 → 1403 frames), undistorted clips were unchanged, padding stayed zero, all values finite.
+
+**Settings:** identical to atyp2 except `--p_dys 0.3` (`train/runs/atyp3.cmd`), so the difference between the two
+measures the simulation alone. One seed each, so a small difference will not be conclusive.
+
+**What to compare:** dysarthric speakers F03 and M05 (should improve if the simulation works), sentences separately
+from words, and LibriSpeech (should not get worse, since the distortions only touch training clips).
 
 ## 5. Findings so far, for the paper
 

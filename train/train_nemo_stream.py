@@ -30,6 +30,7 @@ from torch.utils.data import DataLoader
 from data import AudioDataset, BucketBatchSampler, collate, load_manifest
 from nemo_small import NemoSmall, rel_pos_emb
 from quant_ops import fq_act, fq_weight, fq_rows
+from simdys import simulate
 
 
 class BatchPre(nn.Module):
@@ -233,7 +234,11 @@ def main():
     ap.add_argument("--p_noise", type=float, default=0.6)
     ap.add_argument("--p_rir", type=float, default=0.3)
     ap.add_argument("--p_speed", type=float, default=0.0, help="speed perturbation 0.9x / 1.1x (needs --aug_dir)")
+    ap.add_argument("--p_dys", type=float, default=0.0, help="simulated dysarthria (simdys.py) on this share of typical clips")
+    ap.add_argument("--dys_sources", default="torgo", help="manifest sources that are already atypical (never distorted)")
     a = ap.parse_args()
+    dys_src = set(a.dys_sources.split(","))
+    assert not a.p_dys or a.stream, "--p_dys needs the fixed normalization of --stream"
     dev = "cuda"
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(0); random.seed(0)
@@ -340,13 +345,16 @@ def main():
         sampler.set_epoch(ep)
         dl = DataLoader(AugDataset(items, aug), batch_sampler=sampler, collate_fn=collate, num_workers=a.workers,
                         pin_memory=True, prefetch_factor=4, persistent_workers=False)
-        for wav, lens, tokb, tl, _ in dl:
+        for wav, lens, tokb, tl, idx in dl:
             wav = wav.to(dev).float() / 32768.0
             lens, tokb, tl = lens.to(dev), tokb.to(dev), tl.to(dev)
             with torch.no_grad():
                 if a.stream:  # random gain: fixed normalization must not depend on the recording level
                     wav = wav * (10.0 ** (torch.empty(wav.shape[0], 1, device=dev).uniform_(-12, 12) / 20.0))
                 f, fl = pre(wav, lens)
+                if a.p_dys:  # simulated dysarthria on typical speech only (not on clips from --dys_sources)
+                    sel = torch.tensor([items[j]["src"] not in dys_src and random.random() < a.p_dys for j in idx.tolist()])
+                    f, fl = simulate(f, fl, sel, pre.mean, pre.std)
                 B, T, _ = f.shape
                 fr = torch.arange(80, device=dev)[None]
                 for _ in range(2):
