@@ -4,13 +4,11 @@ rem then the atyp2 recipe unchanged, so the difference to atyp2 measures the ext
 rem Also evaluates the grown model before training (how much inserting the layers costs).
 rem Waits for atyp3 (and its evaluations) to finish first. Runs code from G:\cosgc\repo3.
 rem Run on the training PC: cmd /c G:\cosgc\repo3\train\runs\big1.cmd > G:\cosgc\exp\big1_all.log 2>&1
-rem Then waits until 1 AM (starts at once between 1 and 7 AM), so it does not load the PC while it is in use.
 set TMP=G:\cosgc\tmp
 set TEMP=G:\cosgc\tmp
 cd /d G:\cosgc\repo3\train
 :wait
 findstr /c:"DONE" G:\cosgc\exp\atyp3_all.log >nul 2>&1 || (timeout /t 120 /nobreak >nul & goto wait)
-powershell -NoProfile -Command "$t = (Get-Date).Date.AddHours(1); if ((Get-Date) -ge $t.AddHours(6)) { $t = $t.AddDays(1) }; while ((Get-Date) -lt $t) { Start-Sleep 60 }"
 set D=G:\cosgc\data
 set E=G:\cosgc\exp
 set PY=G:\cosgc\venv\Scripts\python.exe -u
