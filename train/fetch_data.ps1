@@ -15,10 +15,11 @@ $items = @(
   @("librispeech-dev-clean",       "https://www.openslr.org/resources/12/dev-clean.tar.gz",       "LibriSpeech\dev-clean"),
   @("librispeech-test-clean",      "https://www.openslr.org/resources/12/test-clean.tar.gz",      "LibriSpeech\test-clean"),
   @("librispeech-test-other",      "https://www.openslr.org/resources/12/test-other.tar.gz",      "LibriSpeech\test-other"),
-  @("torgo-F",  "https://www.cs.toronto.edu/~complingweb/data/TORGO/F.tar.bz2",  "TORGO\F"),
-  @("torgo-FC", "https://www.cs.toronto.edu/~complingweb/data/TORGO/FC.tar.bz2", "TORGO\FC"),
-  @("torgo-M",  "https://www.cs.toronto.edu/~complingweb/data/TORGO/M.tar.bz2",  "TORGO\M"),
-  @("torgo-MC", "https://www.cs.toronto.edu/~complingweb/data/TORGO/MC.tar.bz2", "TORGO\MC"),
+  # TORGO archives unpack into one folder per speaker
+  @("torgo-F",  "https://www.cs.toronto.edu/~complingweb/data/TORGO/F.tar.bz2",  "TORGO\F01"),
+  @("torgo-FC", "https://www.cs.toronto.edu/~complingweb/data/TORGO/FC.tar.bz2", "TORGO\FC01"),
+  @("torgo-M",  "https://www.cs.toronto.edu/~complingweb/data/TORGO/M.tar.bz2",  "TORGO\M01"),
+  @("torgo-MC", "https://www.cs.toronto.edu/~complingweb/data/TORGO/MC.tar.bz2", "TORGO\MC01"),
   @("musan",    "https://www.openslr.org/resources/17/musan.tar.gz",            "musan")
 )
 

@@ -34,7 +34,7 @@ The `us.openslr.org` mirror served a certificate for a different name on 2026-10
 | Terms (quoted) | "Use of this database is free for academic (non-profit) purposes." Provided as-is. |
 | Citation required | Anything published with it must cite at least one of: Rudzicz, Namasivayam, Wolff (2012), "The TORGO database of acoustic and articulatory speech from speakers with dysarthria", *Language Resources and Evaluation* 46(4) (the one describing the database); Rudzicz, Hirst, van Lieshout (2012), *JSLHR* 55(4); Rudzicz (2012), *Speech Communication* 54(3). |
 | Files | `F.tar.bz2` (females with dysarthria), `FC.tar.bz2` (female controls), `M.tar.bz2` (males with dysarthria), `MC.tar.bz2` (male controls) |
-| Location | `G:\cosgc\data\TORGO\{F,FC,M,MC}\<speaker>\Session*\` |
+| Location | `G:\cosgc\data\TORGO\<speaker>\Session*\` (F01, F03, F04, FC01–FC03, M01–M05, MC01–MC04) |
 | Why | The only free, directly downloadable dysarthric speech corpus we found. Small (8 speakers), so it is best for adaptation and for **evaluation per speaker**, not as the only training data. |
 | Caveats | Much of it is single words and short prompts, not conversation. Some prompts are image descriptions without a transcript. Speakers' severity varies widely. Keep each speaker's held-out data separate, and never put the same speaker in both training and test when reporting results. |
 
@@ -73,6 +73,19 @@ Add a row for every model you export.
 
 Copied from `G:\cosgc\data\fetch_log.tsv`. Re-run `fetch_data.ps1` on another machine and compare to check you have the same data.
 
+All downloaded 2026-10-29, all unpacked without errors. About 35 GB of archives; they are kept next to the unpacked data.
+
 | Archive | Bytes | SHA-256 |
 |---|---|---|
-| (filled in when the downloads finish) | | |
+| LibriSpeech `train-clean-100.tar.gz` | 6,387,309,499 | `D4DDD1D5A6AB303066F14971D768EE43278A5F2A0AA43DC716B0E64ECBBBF6E2` |
+| LibriSpeech `dev-clean.tar.gz` | 337,926,286 | `76F87D090650617FCA0CAC8F88B9416E0EBF80350ACB97B343A85FA903728AB3` |
+| LibriSpeech `test-clean.tar.gz` | 346,663,984 | `39FDE525E59672DC6D1551919B1478F724438A95AA55F874B576BE21967E6C23` |
+| LibriSpeech `test-other.tar.gz` | 328,757,843 | `D09C181BBA5CF717B3DEE7D4D592AF11A3EE3A09E08AE025C5506F6EBE961C29` |
+| TORGO `F.tar.bz2` | 1,139,746,435 | `ED22D12EF3AC4511E99EC15B13DDCD42BAFD6FBAE939A749BDD23D761A8C462E` |
+| TORGO `FC.tar.bz2` | 2,532,029,976 | `1DEBF8B214656591152EFB94F465C22DD067B12A6DC41851EB70651B5717EE31` |
+| TORGO `M.tar.bz2` | 2,506,634,222 | `FDED3B14C0B54F58803AFDDB53FB98A826F3584CFDA918BFCF25C798D994D1D7` |
+| TORGO `MC.tar.bz2` | 3,398,783,713 | `DC11AB0257B82065D7A32C7E816E039107B7B3228633F8E03592F1350CD41565` |
+| MUSAN `musan.tar.gz` | 11,086,114,085 | `86D1061C7E15B5C9E906777685C519701DF51BFDE3001E1070DCC9FFAC955EE1` |
+
+`dev-clean` was downloaded by hand before the script existed, so it has no line in `fetch_log.tsv`; its hash was computed afterwards.
+The OpenSLR servers sent about 4 to 5 MB/s per connection, so the full set took about two hours on a 1 Gbps line.
