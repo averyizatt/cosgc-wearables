@@ -451,6 +451,47 @@ E8; the quantization-aware version is big2q (`train/runs/big2q.cmd`, the atyp2q 
 **What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
 per second of speech for both models; big1 is only useful if it stays under 1.0.
 
+### E7. atyp4: atyp2 + UASpeech (2026-10-31): invalid, transcript bug
+
+**Plan:** atyp2's recipe with UASpeech blocks B1 and B3 (microphones M5 and M2, 25,939 clips, 18 h) added to the
+training data; test on UASpeech block B2 (M5, 7,136 clips, all 28 speakers) as well as TORGO (`train/runs/atyp4.cmd`).
+
+**What happened:** atyp4 got worse on TORGO (streaming 34.36 % vs 30.11 % for atyp2; every speaker worse, F03 53.6,
+M05 80.2, FC03 19.8, MC04 22.5; LibriSpeech 6.16 unchanged), and every model scored 94–96 % on UASpeech B2, controls
+included. The transcripts were wrong: each one-word clip had the word repeated about 10 times ("paste paste ... paste"),
+and some had phone-level labels ("sil silmarker dh their eh r ..."). Cause in `make_manifest_uaspeech.py`: the label
+files list each utterance under several microphones and every release folder has a copy, the phone-alignment files
+were read as well, and the reader appended all entries for an utterance instead of keeping one. The models' actual
+outputs were mostly right ("paste", "golf", "your"). So atyp4 was trained to emit long repetitions for short clips,
+which explains its TORGO loss; atyp4 says nothing about UASpeech as training data.
+
+**Fix:** the reader keeps one entry per utterance from the `*_word.mlf` files only, and the manifest report now counts
+words per transcript (must be 1 for UASpeech). The earlier note that each utterance is listed under one random
+microphone was wrong. Manifests rebuilt; B2 hypotheses already computed are re-scored against the corrected
+transcripts below; UASpeech training is re-run on the 24-layer model as big3 (`train/runs/big3.cmd`: big2 + UASpeech,
+otherwise identical, so big3 vs big2 measures the data).
+
+**UASpeech B2 re-scored** (corrected transcripts, 765 of 765 block/word pairs agree across speakers; 56 clips have two
+words, "x ray" and "re united"; PyTorch float, greedy, WER %). None of these models saw UASpeech in training except
+atyp4 (with the broken transcripts), so for the others all 28 speakers and the recording setup are unseen:
+
+| | all, full | all, stream | control | dysarthric | digits | letters | commands | common | uncommon |
+|---|---|---|---|---|---|---|---|---|---|
+| shipped | 71.1 | 72.8 | 41.3 | 100.0 | 41.8 | 71.7 | 76.0 | 52.8 | 95.3 |
+| atyp2 | 62.4 | 66.5 | 37.6 | 91.5 | 36.1 | 63.8 | 65.0 | 49.1 | 87.6 |
+| big2 | 63.1 | 67.4 | 39.0 | 92.0 | 42.1 | 63.6 | 66.7 | 52.4 | 85.8 |
+| atyp4 (bad labels) | 75.4 | 82.0 | 69.6 | 92.8 | 95.4 | 77.9 | 89.8 | 74.2 | 88.1 |
+
+(stream columns after "all" are streaming.) Single isolated words with no sentence context and an open vocabulary are
+hard even for the controls (37–41 %); UASpeech is usually reported with a closed vocabulary, so these numbers are not
+comparable to published UASpeech results. Dysarthric WER near 100 % for the shipped model includes insertions.
+
+**Finding 17:** TORGO fine-tuning carries over to an unseen corpus: 6.3 points better than the shipped model on
+UASpeech B2 overall, 8.5 for the dysarthric speakers. But big2's advantage over atyp2 does not: on UASpeech they are
+equal (67.4 vs 66.5 streaming). big2's 2.6-point TORGO gain (E6) may therefore come partly from fitting TORGO's
+shared prompts better rather than from recognizing dysarthric speech better in general. The overlap-free TORGO subset
+(46 clips, E8) points the same way as the full set, but is small. Report both corpora.
+
 ### E8. The deployed engine: int8 loss and the language model (2026-10-31)
 
 **Why:** all numbers above come from PyTorch in floating point with greedy decoding. The device runs the C engine
@@ -521,7 +562,10 @@ clips with a transcript unseen in training: 32.4 % greedy, 27.9 % with LM (rest 
    results must be measured on the exported model.
 8. Growing the model from 16 to 24 layers with an exact identity start, then fine-tuning, beats the same fine-tune at
    16 layers for every test speaker, and is more robust to int8 (E6, E8). On the device arithmetic with the language
-   model: 26.2 % WER on TORGO test vs 37.4 % for the shipped model (dysarthric speakers 52.9 vs 68.4).
+   model: 26.2 % WER on TORGO test vs 37.4 % for the shipped model (dysarthric speakers 52.9 vs 68.4). On an unseen
+   corpus (UASpeech B2) the 24-layer model is no better than the 16-layer one, so part of the depth gain may be
+   TORGO-specific (E7).
+9. TORGO fine-tuning improves an unseen corpus too (UASpeech B2: 72.8 → 66.5 % streaming, dysarthric 100 → 91.5).
 
 ## 6. Threats to validity and open issues
 

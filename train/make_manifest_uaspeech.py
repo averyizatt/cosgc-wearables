@@ -20,18 +20,25 @@ KINDS = {"D": "digit", "L": "letter", "C": "command", "CW": "common", "UW": "unc
 
 
 def read_mlf(paths):
+    """Word per <speaker>_<block>_<word id> from the *_word.mlf files. The same utterance is listed under several of the
+    7 microphones (which all recorded it) and every release folder has a copy, so the first entry is kept; the
+    *_aligned_phones.mlf files are skipped (phone lines). Concatenating repeated entries once gave "word word ... word"
+    (10 times) as the transcript of a one-word clip (docs/EXPERIMENTS.md, E7)."""
     words = {}
     for p in paths:
-        key = None
+        if not os.path.basename(p).endswith("_word.mlf"):
+            continue
+        key, entry = None, []
         for line in open(p, encoding="utf-8", errors="replace"):
             line = line.strip()
             if line.startswith('"'):
-                # <speaker>_<block>_<word id>; the .mlf names one (random) microphone, all 7 recorded the same word
-                key = os.path.splitext(os.path.basename(line.strip('"')))[0].rsplit("_", 1)[0]
+                key, entry = os.path.splitext(os.path.basename(line.strip('"')))[0].rsplit("_", 1)[0], []
             elif line == "." or line.startswith("#!"):
+                if key and entry:
+                    words.setdefault(key, " ".join(entry))
                 key = None
             elif key and line:
-                words[key] = (words.get(key, "") + " " + line).strip()
+                entry.append(line)
     return words
 
 
@@ -104,7 +111,8 @@ def main():
              "words from the shared table (no .mlf for the speaker): " + (", ".join(f"{s} {n}" for s, n in sorted(from_table.items())) or "none"),
              "clips per speaker: " + ", ".join(f"{s} {n}" for s, n in sorted(per_spk.items())),
              f"sample rates: {dict(collections.Counter(i['sr'] for i in out))}",
-             f"kinds: {dict(collections.Counter(i['kind'] for i in out))}"]
+             f"kinds: {dict(collections.Counter(i['kind'] for i in out))}",
+             f"words per transcript: {dict(collections.Counter(len(i['text'].split()) for i in out))} (UASpeech: 1)"]
     open(os.path.splitext(a.out)[0] + "_report.txt", "w").write("\n".join(lines) + "\n")
     print("\n".join(lines))
 
