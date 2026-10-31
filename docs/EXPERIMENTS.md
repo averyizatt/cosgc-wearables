@@ -430,6 +430,43 @@ big2 = this start + the atyp2 recipe (`train/runs/big2.cmd`).
 **What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
 per second of speech for both models; big1 is only useful if it stays under 1.0.
 
+### E8. The deployed engine: int8 loss and the language model (2026-10-31)
+
+**Why:** all numbers above come from PyTorch in floating point with greedy decoding. The device runs the C engine
+with int8 weights and activations and can decode with beam search and the shipped n-gram language model
+(`models/nemo_lm.tlm`). Two items under "threats to validity".
+
+**Method:** models exported with `train/export_nemo.py` (int8), run with the host build of the engine
+(`esp32/host/tasr_cli`, same arithmetic as the chip; new `--stream` option feeds 20 ms at a time to the streaming
+engine with the chunk and left context stored in the model, 32 / 128) through `esp32/host/eval_cli.py` (same text
+normalization and corpus-level WER as `eval_manifest.py`). Language model with the engine defaults (beam 4, weight and
+bonus as tuned upstream on LibriSpeech dev-clean): nothing was tuned on TORGO.
+
+**Results, TORGO test, streaming (WER %):**
+
+| | shipped, PyTorch | shipped, engine | atyp2, PyTorch | atyp2, engine | atyp2, engine + LM |
+|---|---|---|---|---|---|
+| all | 37.31 | 37.37 | 30.11 | 33.67 | 30.87 |
+| F03 | 57.0 | 57.1 | 48.8 | 53.3 | 49.5 |
+| M05 | 89.7 | 89.8 | 78.3 | 83.0 | 78.6 |
+| FC03 | 23.6 | 23.6 | 16.2 | 20.1 | 17.4 |
+| MC04 | 21.7 | 21.8 | 17.0 | 19.1 | 17.3 |
+| sentences / words | 28.5 / 59.8 | 28.5 / 60.1 | 25.8 / 41.1 | 27.1 / 50.6 | 23.6 / 49.5 |
+
+**Finding 13:** the shipped model loses nothing in the int8 engine (37.31 → 37.37), but atyp2 loses 3.6 points
+(30.11 → 33.67), most of it on single words (41.1 → 50.6). The float fine-tune gave up the int8 robustness the shipped
+model was trained with. PyTorch with int8 fake quantization (`eval_manifest.py --bits 8`, every 5th clip) gives
+33.1 %, so the simulation reproduces the loss and quantization-aware training should recover it (E8b, `atyp2q`:
+atyp2 + 1000 steps with `--bits 8`). All float results above therefore overstate what the device achieves; final
+numbers must come from the engine.
+
+**Finding 14:** the language model, untuned for this data, recovers 2.8 points overall (33.67 → 30.87) and 4.0 for
+the dysarthric speakers (63.6 → 59.6), mostly on sentences (27.1 → 23.6) and less on single words (50.6 → 49.5).
+
+**Vocabulary overlap:** only 46 of 5,214 test clips have a transcript that never occurs in TORGO training
+(`esp32/host/overlap.py`); their WER (34.8 % greedy, 31.2 % with LM) is close to the rest (33.6 / 30.9), but 46 clips
+are too few to rule out that the shared prompts help.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe

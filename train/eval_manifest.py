@@ -34,6 +34,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="evaluate only every n-th clip (quick look)")
     ap.add_argument("--simdys", default="", help="distort every clip with simdys.py at this severity (mild, moderate, "
                     "severe or 0-1), to test models on simulated dysarthria")
+    ap.add_argument("--bits", type=int, default=0, help="8: simulate the engine's int8 weights and activations "
+                    "(fake quantization as in training with --bits 8); 0: floating point")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     sd = torch.load(f"{a.nemo}/state_dict_plain.pt", map_location="cpu")
@@ -45,7 +47,7 @@ def main():
     norm = src if src.get("norm_mean") is not None else (torch.load(a.init, map_location="cpu") if a.init else {})
     pre = BatchPre(sd["preprocessor.featurizer.window"], sd["preprocessor.featurizer.fb"],
                    norm.get("norm_mean"), norm.get("norm_std")).to(dev)
-    net = SModel(m).to(dev).eval()
+    net = SModel(m, a.bits).to(dev).eval()
     sp = spm.SentencePieceProcessor(model_file=f"{a.nemo}/tokenizer.model")
     V = sp.get_piece_size()
     items = [json.loads(l) for l in open(a.manifest, encoding="utf-8")]
