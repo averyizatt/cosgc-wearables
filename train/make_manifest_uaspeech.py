@@ -26,7 +26,8 @@ def read_mlf(paths):
         for line in open(p, encoding="utf-8", errors="replace"):
             line = line.strip()
             if line.startswith('"'):
-                key = os.path.splitext(os.path.basename(line.strip('"')))[0]
+                # <speaker>_<block>_<word id>; the .mlf names one (random) microphone, all 7 recorded the same word
+                key = os.path.splitext(os.path.basename(line.strip('"')))[0].rsplit("_", 1)[0]
             elif line == "." or line.startswith("#!"):
                 key = None
             elif key and line:
@@ -49,13 +50,15 @@ def main():
     words = read_mlf([p for d in dirs for p in glob.glob(os.path.join(d, "mlf", "**", "*.mlf"), recursive=True)
                       if not os.path.basename(p).startswith("._")])
     # every speaker reads the same word for a given block and word id; speakers without .mlf files (CF05, CM01, F05 in
-    # the 2020 release) get their words from this table, built from the others (ids with conflicting words are left out)
+    # the 2020 release) get their words from this table, built from the others (an id is used only if at least 90 % of
+    # the speakers agree on its word)
     by_id = collections.defaultdict(collections.Counter)
     for key, w in words.items():
         p = key.split("_")
-        if len(p) == 4:
-            by_id[(p[1], p[2])][w] += 1
-    table = {k: c.most_common(1)[0][0] for k, c in by_id.items() if len(c) == 1}
+        if len(p) == 3:
+            by_id[(p[1], p[2])][w.lower()] += 1
+    table = {k: c.most_common(1)[0][0] for k, c in by_id.items() if c.most_common(1)[0][1] >= 0.9 * sum(c.values())}
+    print(f"word table: {len(table)} of {len(by_id)} (block, word id) pairs agree across speakers")
     why, per_spk, out, from_table = collections.Counter(), collections.Counter(), [], collections.Counter()
     for d in dirs:
         for wav in sorted(glob.glob(os.path.join(d, "audio", a.version, "*", "*.wav"))):
@@ -69,7 +72,7 @@ def main():
             spk, block, wid, mic = parts
             if mic not in mics or (a.blocks and block not in a.blocks):
                 continue
-            w = words.get(name) or words.get(name.rsplit("_", 1)[0])
+            w = words.get(f"{spk}_{block}_{wid}")
             if not w and (block, wid) in table:
                 w = table[(block, wid)]
                 from_table[spk] += 1
