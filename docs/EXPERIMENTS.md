@@ -427,6 +427,27 @@ normalized vector is unchanged, so the new layer (zero branches) applies exactly
 did. Measured: encoder outputs of the grown and the shipped model differ by 1.2 × 10⁻⁵ (relative, random input).
 big2 = this start + the atyp2 recipe (`train/runs/big2.cmd`).
 
+**big2 results (2026-10-31):** before training, the grown model scores what the shipped one does (streaming: TORGO
+37.31 %, LibriSpeech 6.21 %, every speaker equal to the shipped model's to the second decimal), so the start is exact
+in practice too. After 4000 steps (5933 s, 1.48 s per step from packed audio, partly slowed by an engine evaluation
+running alongside) big2 beats atyp2 for every test speaker in both modes (WER %, PyTorch float, greedy):
+
+| | atyp2 full | big2 full | atyp2 stream | big2 stream |
+|---|---|---|---|---|
+| all TORGO | 23.85 | 21.14 | 30.11 | **27.55** |
+| F03 | 39.8 | 35.6 | 48.8 | 44.8 |
+| M05 | 68.9 | 61.2 | 78.3 | 73.9 |
+| FC03 | 11.4 | 9.9 | 16.2 | 14.1 |
+| MC04 | 11.9 | 10.5 | 17.0 | 15.4 |
+| sentences / words | 19.4 / 35.3 | 17.6 / 30.3 | 25.8 / 41.1 | 24.2 / 36.0 |
+| LibriSpeech | 4.00 | 4.02 | 6.10 | 6.01 |
+
+**Finding 15:** with the same data and recipe, 8 more layers (13 → 19 M parameters, initialized so the model starts
+as the shipped one) lower streaming WER by 2.6 points overall and 4.0 / 4.4 for the dysarthric speakers, with no loss
+on LibriSpeech. The gain holds for sentences and single words. The int8 export is 20.4 MB (fits the P4's 32 MB flash
+with room for the language model); whether it runs in real time on the P4 is to be measured. Device-engine numbers in
+E8; the quantization-aware version is big2q (`train/runs/big2q.cmd`, the atyp2q recipe on big2).
+
 **What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
 per second of speech for both models; big1 is only useful if it stays under 1.0.
 
@@ -467,6 +488,23 @@ the dysarthric speakers (63.6 → 59.6), mostly on sentences (27.1 → 23.6) and
 (`esp32/host/overlap.py`); their WER (34.8 % greedy, 31.2 % with LM) is close to the rest (33.6 / 30.9), but 46 clips
 are too few to rule out that the shared prompts help.
 
+**big2 (24 layers, E6) in the engine, TORGO test, streaming (WER %):**
+
+| | shipped, engine | atyp2, engine + LM | big2, PyTorch | big2, engine | big2, engine + LM |
+|---|---|---|---|---|---|
+| all | 37.37 | 30.87 | 27.55 | 28.49 | **26.23** |
+| dysarthric / control | 68.4 / 22.8 | 59.6 / 15.4 | | 56.9 / 15.2 | **52.9 / 13.7** |
+| F03 | 57.1 | 49.5 | 44.8 | 47.1 | **43.4** |
+| M05 | 89.8 | 78.6 | 73.9 | 75.4 | **71.0** |
+| FC03 | 23.6 | 17.4 | 14.1 | 15.0 | **13.5** |
+| MC04 | 21.8 | 17.3 | 15.4 | 15.3 | **14.0** |
+| sentences / words | 28.5 / 60.1 | 23.6 / 49.5 | 24.2 / 36.0 | 24.4 / 38.9 | **21.7 / 38.0** |
+
+**Finding 16:** the 24-layer model loses only 0.9 points in the int8 engine (27.55 → 28.49), against 3.6 for atyp2,
+without quantization-aware training. With the language model it reaches 26.2 % on the device arithmetic, 11.1 points
+(30 % relative) below the shipped model, 15.5 points below it for the dysarthric speakers (68.4 → 52.9). On the 46
+clips with a transcript unseen in training: 32.4 % greedy, 27.9 % with LM (rest 28.4 / 26.2).
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -479,6 +517,11 @@ are too few to rule out that the shared prompts help.
    weaker high frequencies and a flatter syllable rhythm, not by smoother articulation (E5).
 6. A simulation calibrated to those differences degrades the shipped model by about as much as real dysarthria does
    (E5). Whether training on it helps is pending (E4).
+7. Float fine-tunes can lose several points in the device's int8 arithmetic that the shipped model did not (E8);
+   results must be measured on the exported model.
+8. Growing the model from 16 to 24 layers with an exact identity start, then fine-tuning, beats the same fine-tune at
+   16 layers for every test speaker, and is more robust to int8 (E6, E8). On the device arithmetic with the language
+   model: 26.2 % WER on TORGO test vs 37.4 % for the shipped model (dysarthric speakers 52.9 vs 68.4).
 
 ## 6. Threats to validity and open issues
 
