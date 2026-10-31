@@ -40,13 +40,23 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--version", default="noisereduce", choices=["original", "normalized", "noisereduce"])
     ap.add_argument("--mics", default="M5")
+    ap.add_argument("--blocks", default="", help="e.g. B1,B3 (the usual training blocks) or B2 (test); default all")
     a = ap.parse_args()
     mics = set(a.mics.split(","))
+    a.blocks = set(a.blocks.split(",")) - {""}
     dirs = sorted(glob.glob(os.path.join(a.root, f"UASpeech_{a.version}_*", "UASpeech")))
     assert dirs, f"no UASpeech_{a.version}_* folders under {a.root}"
     words = read_mlf([p for d in dirs for p in glob.glob(os.path.join(d, "mlf", "**", "*.mlf"), recursive=True)
                       if not os.path.basename(p).startswith("._")])
-    why, per_spk, out = collections.Counter(), collections.Counter(), []
+    # every speaker reads the same word for a given block and word id; speakers without .mlf files (CF05, CM01, F05 in
+    # the 2020 release) get their words from this table, built from the others (ids with conflicting words are left out)
+    by_id = collections.defaultdict(collections.Counter)
+    for key, w in words.items():
+        p = key.split("_")
+        if len(p) == 4:
+            by_id[(p[1], p[2])][w] += 1
+    table = {k: c.most_common(1)[0][0] for k, c in by_id.items() if len(c) == 1}
+    why, per_spk, out, from_table = collections.Counter(), collections.Counter(), [], collections.Counter()
     for d in dirs:
         for wav in sorted(glob.glob(os.path.join(d, "audio", a.version, "*", "*.wav"))):
             name = os.path.splitext(os.path.basename(wav))[0]
@@ -57,9 +67,13 @@ def main():
                 why["unexpected file name"] += 1
                 continue
             spk, block, wid, mic = parts
-            if mic not in mics:
+            if mic not in mics or (a.blocks and block not in a.blocks):
                 continue
-            text = re.sub(r"[^a-z' ]", " ", words.get(name, "").lower()).strip()
+            w = words.get(name) or words.get(name.rsplit("_", 1)[0])
+            if not w and (block, wid) in table:
+                w = table[(block, wid)]
+                from_table[spk] += 1
+            text = re.sub(r"[^a-z' ]", " ", (w or "").lower()).strip()
             if not text:
                 why["no transcript"] += 1
                 continue
@@ -84,6 +98,7 @@ def main():
     h = sum(i["duration"] for i in out) / 3600
     lines = [f"{len(out)} clips, {h:.2f} h, version {a.version}, mics {sorted(mics)}",
              "dropped: " + (", ".join(f"{n} {r}" for r, n in why.most_common()) or "none"),
+             "words from the shared table (no .mlf for the speaker): " + (", ".join(f"{s} {n}" for s, n in sorted(from_table.items())) or "none"),
              "clips per speaker: " + ", ".join(f"{s} {n}" for s, n in sorted(per_spk.items())),
              f"sample rates: {dict(collections.Counter(i['sr'] for i in out))}",
              f"kinds: {dict(collections.Counter(i['kind'] for i in out))}"]

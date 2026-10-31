@@ -363,6 +363,27 @@ sampler restarts the epoch), so this is not bit-identical to an uninterrupted ru
 the saved step. The restart overwrote `atyp3.log`, so the per-step log before the restart is lost; the validation
 numbers above were copied from it beforehand. The run scripts now append to their logs.
 
+**atyp3 results (2026-10-30, 4000 steps; WER %, full / streaming chunk 32 left 128):**
+
+| test | shipped | atyp2 | atyp3 |
+|---|---|---|---|
+| F03 (dysarthric) | 49.5 / 57.0 | **39.8 / 48.8** | 41.6 / 50.4 |
+| M05 (dysarthric) | 80.0 / 89.7 | 68.9 / 78.3 | **67.3 / 77.9** |
+| FC03 (control) | 17.4 / 23.6 | **11.4 / 16.2** | 11.5 / 16.6 |
+| MC04 (control) | 16.4 / 21.7 | **11.9 / 17.0** | 12.9 / 18.1 |
+| sentences | 21.4 / 28.5 | 19.4 / **25.8** | **19.3** / 26.4 |
+| single words | 54.6 / 59.8 | **35.3 / 41.1** | 37.4 / 42.5 |
+| all dysarthric | 60.1 / 68.3 | **49.9 / 59.0** | 50.5 / 59.9 |
+| LibriSpeech test-clean | 4.01 / 6.21 | 4.00 / 6.10 | 4.02 / **6.07** |
+
+**Finding 11:** simulated dysarthria (version 2, 30 % of typical clips) did **not** improve recognition of real
+dysarthric speakers: M05 improved by 0.4 points, F03 got worse by 1.6, dysarthric speakers overall by 0.9 (streaming).
+The validation subset (150 TORGO + 150 LibriSpeech clips) had suggested a gain (8.54 vs 8.84 at step 3000), which the
+full test set does not confirm: a reminder that the small validation set is too noisy to pick between close runs.
+Possible reasons: the simulation changes features in ways the real speakers do not (E5 matched only coarse
+statistics), TORGO's real dysarthric data already covers what the simulation adds, or 4000 steps are too few for the
+extra variety to pay off. One seed each; the differences are within what a second seed could change.
+
 ### E6. big1: a deeper model for the ESP32-P4 (queued 2026-10-30)
 
 **Why:** the device moves from the ESP32-S3 to the ESP32-P4 (400 MHz instead of 240, 32 MB flash and 32 MB PSRAM
@@ -387,6 +408,24 @@ the model: the training audio is read from packed files (`train/pack_audio.py`: 
 stored back to back sorted by duration). With one file per clip, the duration-bucketed batches made the training PC's
 hard drive seek constantly (100 % busy at 1–2 MB/s during atyp3), which slowed the PC and likely the training. Compare
 big1's time per step with atyp2's, keeping in mind the deeper model also costs about 1.5× compute.
+
+**big1 results (2026-10-31):** the grown model *before training* was broken, not "close to the old one": 98.8 % (F03),
+100 % (M05), 91–92 % (controls), 70.3 % (LibriSpeech) streaming WER. Re-applying a LayerNorm with the old layer's
+scale and shift to an input that already carries them changes it a lot, and eight such insertions compound. After
+4000 steps the model recovered but stayed worse than atyp2 everywhere (streaming: F03 51.5, M05 81.4, FC03 18.0,
+MC04 19.4, LibriSpeech 7.06; atyp2: 48.8, 78.3, 16.2, 17.0, 6.10), so the training went into repairing the damage.
+The `.tnm` export of the 24-layer model works (20.4 MB at int8).
+
+**Finding 12 (training speed):** big1 took 5517 s for 4000 steps (1.38 s per step) from packed audio, against about
+3.8 s per step for atyp3 from one file per clip, although big1's model needs 1.5× the compute. Reading training audio
+sequentially made training roughly 3–4× faster on this PC (one hard drive); the data loading, not the GPU, had been
+the bottleneck.
+
+**Fix (big2):** `grow_nemo.py` now makes the start exact. The old layer before each new one gets a plain LayerNorm
+(weight 1, bias 0), and the new layer's final LayerNorm takes over the old scale and shift. LayerNorm of an already
+normalized vector is unchanged, so the new layer (zero branches) applies exactly the scale and shift the old layer
+did. Measured: encoder outputs of the grown and the shipped model differ by 1.2 × 10⁻⁵ (relative, random input).
+big2 = this start + the atyp2 recipe (`train/runs/big2.cmd`).
 
 **What to compare:** big1 vs atyp2 per TORGO speaker and on LibriSpeech, and step time (training cost). On the P4: compute
 per second of speech for both models; big1 is only useful if it stays under 1.0.
