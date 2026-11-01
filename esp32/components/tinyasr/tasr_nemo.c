@@ -262,8 +262,9 @@ size_t tasr_nemo_place_weights(tasr_nemo_t *m, size_t budget)
 static void ndbg(const char *what, int i, const float *x, size_t n)
 {
     uint32_t h = 2166136261u;
-    for (size_t k = 0; k < n; k++) { uint32_t b; memcpy(&b, &x[k], 4); h = (h ^ b) * 16777619u; }
-    printf("DBG %s %d %08x\n", what, i, (unsigned)h);
+    double sum = 0, sq = 0;  // hashes differ by the last bit of logf, so also values to compare
+    for (size_t k = 0; k < n; k++) { uint32_t b; memcpy(&b, &x[k], 4); h = (h ^ b) * 16777619u; sum += x[k]; sq += (double)x[k] * x[k]; }
+    printf("DBG %s %d %08x %.6e %.6e\n", what, i, (unsigned)h, sum, sq);
 }
 static void ndbg8(const char *what, int i, const int8_t *x, int rows, int stride, int kp)
 {
@@ -1278,6 +1279,7 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         const int tn = T - t0 < RB ? T - t0 : RB;
         nquant(&C, x + (size_t)t0 * d, tn, d, d, m->head.kp);
         nqlin(&C, &m->head, tn, lg, V1);
+        ndbg("logit", t0, lg, (size_t)tn * V1);
         for (int t = 0; t < tn; t++) {
             const float *l = lg + (size_t)t * V1;
             if (logit_sink && nf < max_frames) memcpy(logit_sink + (size_t)nf * V1, l, sizeof(float) * V1);

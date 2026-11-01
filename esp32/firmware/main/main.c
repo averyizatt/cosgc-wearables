@@ -302,6 +302,34 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     if (st) printf("STREAM mean finish %.0f ms @240MHz, %.0f ms wall\n", tot_fin / n_utt / CPU_HZ * 1000.0, tot_fin_wall / n_utt / 1e3);
     printf("TOTAL audio %.1fs cycles %.0f RTF@240MHz %.3f wall RTF %.3f\n", tot_audio, tot_cycles, tot_cycles / CPU_HZ / tot_audio,
            tot_wall / 1e6 / tot_audio);
+#if defined(CONFIG_IDF_TARGET_ESP32P4) && !defined(CONFIG_TASR_BENCH_STREAM_ONLY)
+    {  // how long a full-context pass takes against the utterance's length: the clips joined end to end, the streaming object still allocated
+        const uint32_t cap = 16000 * 20;
+        int16_t *join = heap_caps_malloc(sizeof(int16_t) * cap, MALLOC_CAP_SPIRAM);
+        uint32_t have = 0;
+        p = aud + 8;
+        for (uint32_t u = 0; u < n_utt && join; u++) {
+            uint32_t ns, tl;
+            memcpy(&ns, p, 4); memcpy(&tl, p + 4, 4);
+            const int16_t *pcm = (const int16_t *)(p + 8 + ((tl + 3) & ~3u));
+            p = (const uint8_t *)(pcm + ns + (ns & 1));
+            const uint32_t nc = ns < cap - have ? ns : cap - have;
+            memcpy(join + have, pcm, sizeof(int16_t) * nc);
+            have += nc;
+        }
+        static const int lens[] = {1, 2, 3, 5, 8, 12, 16, 20};
+        for (int i = 0; join && i < (int)(sizeof(lens) / sizeof(lens[0])); i++) {
+            const uint32_t ns = (uint32_t)lens[i] * 16000;
+            if (ns > have) break;
+            const int64_t w0 = esp_timer_get_time();
+            tasr_nemo_transcribe(m, join, ns, dec, text, sizeof(text), NULL, 0, NULL);
+            const int64_t wall = esp_timer_get_time() - w0;
+            printf("LEN %2d s | full-context wall %lld ms | RTF %.3f | min free PSRAM %u\n", lens[i], (long long)(wall / 1000), wall / 1e6 / lens[i],
+                   (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+        }
+        heap_caps_free(join);
+    }
+#endif
     printf("MEM min free PSRAM %u internal %u\n", (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     for (int i = 0; tasr_nemo_profile_name(i); i++)

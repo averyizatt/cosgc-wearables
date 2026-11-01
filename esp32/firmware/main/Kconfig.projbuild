@@ -101,6 +101,13 @@ menu "tinyasr"
             GPIO48 on ESP32-S3-DevKitC-1 v1.0 (and most N16R8 clones), GPIO38 on v1.1. Dim blue: loading; dim green:
             ready; blue: hearing you; amber: computing the final text; green flash: text ready; red flash: nothing
             recognized; purple: audio buffer full (recognition is behind, audio is dropped).
+    config TASR_FINAL_FULL
+        bool "Microphone mode: partial text from streaming, final text from a full-context pass over the utterance"
+        default n
+        help
+            Streaming models only. When speech ends (button released, or the pause), the whole utterance runs through the
+            encoder with full context, which is much more accurate (docs/EXPERIMENTS.md, E12) but takes about 0.64 times
+            the utterance's length on two ESP32-P4 cores. Utterances beyond the 20 s recording buffer keep the streaming text.
     config TASR_SEG_HANG_MS
         int "Pause (ms) that ends an utterance in microphone mode"
         default 800
@@ -122,6 +129,7 @@ menu "tinyasr"
 
     config TASR_KERNEL_BENCH
         bool "Benchmark: at boot, time the int8 GEMM kernels with weights in internal RAM, PSRAM and flash"
+        depends on IDF_TARGET_ESP32S3  # Xtensa assembly
         default n
         help
             Prints KBENCH lines: cycles per multiply-accumulate for each placement. If PSRAM and flash are close to

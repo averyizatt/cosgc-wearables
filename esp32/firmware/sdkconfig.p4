@@ -48,5 +48,7 @@ CONFIG_TASR_OLED_SCL=8
 CONFIG_TASR_OLED_ADDR=0x3C
 # no LED on the board; a push button on a header pin can be added with CONFIG_TASR_PTT_GPIO (-1: the VAD ends utterances)
 CONFIG_TASR_SEG_HANG_MS=800
+# final text from a full-context pass (0.64 x the utterance on two cores): WER 25.1 -> 19.8 on TORGO test, docs/EXPERIMENTS.md E12
+CONFIG_TASR_FINAL_FULL=y
 CONFIG_TASR_PTT_GPIO=-1
 CONFIG_TASR_LED_GPIO=-1

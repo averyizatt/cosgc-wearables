@@ -184,7 +184,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(LED_BUSY);
     api_state("processing");
     const int64_t t0 = esp_timer_get_time();
-    if (p->st) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+    if (p->st && !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP)) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
     else tasr_nemo_transcribe(p->m, p->utt, p->n_utt, p->dec, p->text, p->text_len, NULL, 0, NULL);
     const int64_t t1 = esp_timer_get_time();
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
@@ -200,6 +200,8 @@ static void ptt_end(ptt_t *p, int64_t released_us)
 // Push-to-talk: an utterance is the audio between a press and a release (plus the pre-roll). Streaming models are fed
 // while the button is held, for as long as it is held; the final text comes as soon as the recognizer reaches the
 // release, with no pause to wait. Utterance-mode models record up to 20 s, then transcribe and go on recording.
+// With TASR_FINAL_FULL a streaming model does both: partial text while held, then a full-context pass after the release
+// (an utterance longer than the recording buffer keeps the streaming text).
 static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
 {
     static int16_t in[320], blk[320], pre[PTT_PRE];
@@ -207,7 +209,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
     ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, text, sizeof(text), "hold to talk"};
-    p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
+    p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st && !MIC_FINAL_FULL ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     oled_start();
     oled_status(p.idle);
     api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true, HAS_BLE});
@@ -262,9 +264,8 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 api_human_partial();
                 api_partial(text);
             }
-        } else {
-            memcpy(p.utt + p.n_utt, blk, sizeof(int16_t) * n);
         }
+        if ((!p.st || MIC_FINAL_FULL) && p.n_utt + n <= PTT_CAP) memcpy(p.utt + p.n_utt, blk, sizeof(int16_t) * n);
         p.n_utt += n;
     }
 }
@@ -325,7 +326,12 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
             led_set(LED_BUSY);
             api_state("processing");
             int64_t t0 = esp_timer_get_time();
+#ifdef CONFIG_TASR_FINAL_FULL
+            oled_status("working...");
+            tasr_nemo_transcribe(m, utt, n, dec, text, sizeof(text), NULL, 0, NULL);
+#else
             tasr_nemo_stream_finish(st, text, sizeof(text));
+#endif
             const double dt = (esp_timer_get_time() - t0) / 1e6;
             printf("\r%s   [%.1f s audio, final text %.0f ms after the pause was detected]\n", text, n / 16000.0, dt * 1000);
             oled_push(text[0] ? text : "(nothing recognized)");

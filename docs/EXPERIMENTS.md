@@ -727,17 +727,99 @@ the PyTorch simulation match.
 | atyp2 | 30.11 | 33.67 | **30.11** | 30.87 | **27.82** |
 | big2 | 27.55 | 28.49 | **27.52** | 26.23 | **25.14** |
 | big2q | | 28.26 | 27.66 | 25.96 | 25.19 |
-| big3 (E11) | 29.61 | | 29.65 | | |
+| big3 (E11) | 29.61 | | 29.65 | | 27.55 |
 
 big2, engine + LM, new export, against the shipped model's engine score without LM (37.37; dysarthric 68.39): all 25.14, dysarthric 51.17, control 12.90, F03 41.80, M05 68.91, FC03
 12.50, MC04 13.37, sentences 21.57, words 34.26. For the same model on the old export: 26.23, 52.90, 13.69, 43.35, 70.97, 13.45, 13.97, 21.65, 37.95.
-Every speaker and slice improved. Every-5th-clip check first (greedy): atyp2 33.63 → 29.23, big2 27.72 → 26.16. Results in `esp32/host`-format JSON on the laptop (`*_q121_*`); LibriSpeech and UASpeech
-are in the PyTorch queue `train/runs/q121eval.cmd`.
+Every speaker and slice improved. Every-5th-clip check first (greedy): atyp2 33.63 → 29.23, big2 27.72 → 26.16. Results in `esp32/host`-format JSON on the laptop (`*_q121_*`).
+
+**Other corpora on the new grid** (PyTorch with `TASR_FQ_QMAX=121`, `--bits 8`, greedy, `train/runs/q121eval.cmd`; WER %):
+
+| | LibriSpeech test-clean, full / stream | UASpeech B2, full / stream | UASpeech control / dysarthric (stream) |
+|---|---|---|---|
+| atyp2 | 4.04 / 6.13 | 62.25 / 66.46 | 37.86 / 91.27 |
+| big2 | 4.06 / 6.04 | 63.24 / 67.71 | 39.09 / 92.55 |
+| big2q | 4.14 / 6.15 | 65.96 / 69.09 | 41.51 / 93.01 |
+
+The grid costs nothing on typical speech (big2 float 4.02 / 6.01). On UASpeech, atyp2 and big2 match their float scores within 0.4 points (66.5, 67.35). big2q does worse than it did on the old
+grid (66.88 streaming), so on this corpus quantization-aware training on the old grid is a net loss once the grid is fixed: one more reason to drop it.
 
 **Finding 21:** the int8 loss was not a limit of 8 bits. It was an artifact of rounding a fine-tune on the grid of the model it started from, which threw away 77 to 88 % of the weight change. A
 different grid removes the loss entirely: engine scores now equal float (30.11 = 30.11; 27.52 against 27.55), at no cost in size, speed or training. This should apply to
 anyone fine-tuning an already-quantized model. **Consequences:** E8's Finding 13 and E8b's Finding 18 correctly describe the old exporter, not a limit of the device. Quantization-aware
 training is not needed on this model: big2q gains nothing over big2 on the new grid (25.19 against 25.14). All engine results before this entry understate the fine-tunes.
+
+### E11. big3: big2 + UASpeech with corrected transcripts (2026-11-01)
+
+**Question:** does adding UASpeech to training help, now that its transcripts are right (E7)? **Run:** `train/runs/big3.cmd`, identical to big2 (start, steps, learning rate, masks) with UASpeech
+blocks B1 and B3 added (18 h on top of 120 h; the number of steps stays 4000, so TORGO and LibriSpeech each get a smaller share of the batches). Took 7369 s.
+
+| WER % | big2 | big3 |
+|---|---|---|
+| TORGO test, engine, new grid, greedy | 27.52 | 29.65 |
+| TORGO test, engine, new grid, + LM | **25.14** | 27.55 |
+| ... dysarthric / control (+ LM) | 51.17 / 12.90 | 53.55 / 15.32 |
+| ... F03 / FC03 / M05 / MC04 (+ LM) | 41.80 / 12.50 / 68.91 / 13.37 | 43.53 / 13.17 / 72.50 / 17.94 |
+| LibriSpeech test-clean, float, stream / full | 6.01 / 4.02 | 6.2 / 4.05 |
+| UASpeech B2, float, stream / full | 67.35 / 63.11 | **46.54** / 42.89 |
+| ... UASpeech control / dysarthric (stream) | 38.97 / 91.98 | **19.69 / 69.83** |
+
+**Reading this.** Every TORGO speaker got worse, by 0.7 to 4.6 points, and MC04 (a control) the most. The large UASpeech gain does **not** show better recognition of new dysarthric speakers: B1, B2 and B3
+share all 28 speakers and most of the words, so big3 was tested on people and vocabulary it trained on, only with a different block and microphone. The fair measure on UASpeech would hold out whole
+speakers, which we have not run. big3's TORGO loss may be partly a dilution of batches (isolated words from a noisier setup, steps unchanged), which this run cannot separate from a real conflict between corpora.
+
+**Finding 22:** adding a second dysarthric corpus of isolated words made the model worse on the first corpus's unseen speakers (25.14 → 27.55 with the language model). big2 stays the deployed model. Do not
+quote big3's UASpeech score as a gain for new speakers.
+
+### E12. Longer context on the device: full-context final text (2026-11-01)
+
+**Question:** big2 scored about 21 % with full context and 27.5 % streaming in PyTorch. A push button tells the device when speech ended, so it could wait for more audio. How much accuracy does each length of context buy on the deployed model, and is full context affordable on the chip?
+
+**Sweep, big2 on the new grid, C engine with the language model, full TORGO test set (5214 clips; chunk in encoder frames of 40 ms; WER %):**
+
+| Context | all | control | dysarthric | sentence | word | F03 | FC03 | M05 | MC04 |
+|---|---|---|---|---|---|---|---|---|---|
+| chunk 32 = 1.28 s (deployed so far) | 25.14 | 12.90 | 51.17 | 21.57 | 34.26 | 41.80 | 12.50 | 68.91 | 13.37 |
+| chunk 48 = 1.92 s | 23.00 | 10.74 | 49.06 | 19.42 | 32.14 | 39.69 | 10.56 | 66.78 | 10.97 |
+| chunk 64 = 2.56 s | 21.89 | 10.30 | 46.55 | 18.22 | 31.27 | 36.73 | 9.96 | 65.11 | 10.70 |
+| **full utterance** | **19.75** | 9.21 | 42.15 | 15.99 | 29.36 | 33.81 | 8.82 | 57.92 | 9.69 |
+| full utterance, no language model | 21.24 | 10.10 | 44.94 | 17.56 | 30.67 | 35.78 | 9.73 | 62.25 | 10.56 |
+
+Every speaker and slice improves at each step. big2 was not trained for this: only a quarter of its batches had full context, and none had chunk 64 (`--chunks 16,24,32`).
+
+**Left context barely matters** (every 5th clip, 1043 clips; all / dysarthric): chunk 32 with 2.56 s of left context 24.54 / 48.21, 5.12 s (deployed) 24.24 / 47.34, 10.24 s 24.02 / 46.69; chunk 64 with the same three 20.99 / 42.67, 20.95 / 42.56, 20.99 / 42.67. Audio *after* a frame is what helps. On this subset chunk 16 gives 27.90 / 53.31 and full context 19.22 / 38.98. Our first "chunk 96" run is not a result: the engine silently caps a chunk at 64 rows (`RB`), so it reproduced chunk 64 exactly.
+
+**On the chip** (`oido_p4_bench_full_2c`, two cores, 400 MHz; `docs/results/p4_bench_big2q121_full_2c.log`). Clips joined to the wanted length, the streaming object still allocated:
+
+| Utterance | 1 s | 2 s | 3 s | 5 s | 8 s | 12 s | 16 s | 20 s |
+|---|---|---|---|---|---|---|---|---|
+| Time for the full-context pass | 0.68 s | 1.29 s | 1.93 s | 3.17 s | 5.27 s | 8.30 s | 11.77 s | 15.70 s |
+| x real time | 0.682 | 0.643 | 0.642 | 0.633 | 0.659 | 0.692 | 0.736 | 0.785 |
+| Min free PSRAM (MB) | 4.73 | 4.64 | 4.55 | 4.36 | 4.09 | 3.72 | 3.34 | 2.97 |
+
+Attention is quadratic in length, but it only starts to show beyond about 8 s. TORGO test clips have a median of 1.8 s for single words and 3.9 s for sentences (90 % under 4.5 s, 3 of 5214 over the 20 s buffer), so the usual wait at this rate is about 1 to 3 s.
+
+**A transcript difference, investigated.** On one clip of four the board's full-context pass says "yeah i think of it ..." where the host says "i think of it ...", on every run. This would be a bug if the arithmetic differed, so we compared the two layer by layer. The front end agrees to about 1 part in a million (the C libraries' `logf` differ in the last bit), then the difference grows through the layers to about 1.5 % in the logits' squared sum. Two tests settle it:
+
+1. **The kernels are exact:** the board with plain C kernels gives the same hash as the board with vector kernels at 899 of 899 checkpoints, in full-context mode.
+2. **The host does the same when disturbed:** multiplying the host's features by noise of 1 part in a million, with six seeds, moves the logits' squared sum across 4.83 to 4.94 x 10^6 (undisturbed 4.86, board 4.93), and one seed of six produces the same "yeah".
+
+So it is a marginal word tipped by rounding, not a defect. The likely amplifier is the dynamic quantization: a tiny input change flips some int8 rounding, which then acts as noise of its own at each of 24 layers. Earlier "transcripts identical to the host" statements hold for the clips checked, but identity should not be expected on every clip, and a device score can differ slightly from a host score clip by clip.
+
+**Firmware:** `CONFIG_TASR_FINAL_FULL` (on for the P4). Streaming still runs while you speak and gives the partial text; when speech ends the whole utterance goes through the full-context pass for the final text. An utterance beyond the 20 s recording buffer keeps the streaming text. The audio ring (16 s with the voice detector, 32 s with a button) holds more than the longest pass, so nothing is lost meanwhile.
+
+**First speech through the board's own microphone** (`docs/results/p4_mic_full_2c_playback.log`). No person yet: bench clips played on the laptop's speakers at its existing volume, board position not controlled, so this is a check of the path, not an accuracy measurement.
+
+| Clip | Streaming partial text | Final text (full context) | Wait |
+|---|---|---|---|
+| real_20 | no such thought as he was given for the course of peal of registry remained cosed | no such authority was given for the court of appeal into registries remained closed | 3.75 s for 5.7 s |
+| rooms_00 | it is such a noble ambition that it is a pity it has usually such a shallow foundation | the same, correct | 4.46 s for 6.7 s |
+
+The reference for real_20 is "no such authority was given for the court of appeal whose registries remained closed". The third clip, real_26, produced no text. It is recorded about 18 dB quieter than the others (-45.7 dBFS against -28.8 and -26.8), which may be why, but we did not test that. **Problem seen:** seven short bursts (1.3 to 1.8 s) triggered the voice detector and produced empty text, six of them in the last 20 s or so of the 70 s run, with the laptop's fans probably running from other jobs. A button avoids this. The detector's threshold has not been tuned on real rooms.
+
+**Finding 23:** on the deployed 24-layer model, using the whole utterance instead of 1.28 s chunks lowers WER from 25.14 to 19.75 on TORGO test, and from 51.17 to 42.15 for dysarthric speakers, with no training and no change to the model. The ESP32-P4 can afford it: about 0.64 times the utterance's length up to 8 s on two cores. Compared with the shipped model's streaming score without a language model (37.37; dysarthric 68.39), that is close to half the errors overall. For this model the cost of real-time text is larger than the cost of int8, of the model's size, or of the language model.
+
+**Finding 24:** because of dynamic int8 quantization, the engine amplifies a difference of one part in a million in the input to about 1 % in the logits, enough to flip a marginal word. Bit-exact kernels do not imply identical transcripts across platforms unless `logf` matches too.
 
 ## 5. Findings so far, for the paper
 
@@ -764,7 +846,10 @@ training is not needed on this model: big2q gains nothing over big2 on the new g
     the loss entirely (E10). On the device arithmetic with the language model, the 24-layer model reaches 25.1 % WER on TORGO test.
 11. On real hardware, the shipped model streams at 0.748 times real time on one ESP32-P4 core at 400 MHz, about twice as fast
     as the ESP32-S3, with transcripts identical to the host engine on four clips (E9). The 24-layer model, our most accurate,
-    runs at 0.967 on one core and 0.602 on two (E9b). Nobody has yet spoken at the live firmware.
+    runs at 0.967 on one core and 0.602 on two (E9b). Nobody has yet spoken at the live firmware; clips played on a laptop's speakers were recognized through its microphone (E12).
+12. Context matters more than anything else we tried on the device: the same 24-layer model goes from 25.1 % WER with 1.28 s chunks to 19.8 % with the whole utterance on TORGO test (dysarthric 51.2 to 42.2), and the P4 can
+    compute that in about 0.64 times the utterance's length (E12). The firmware now streams partial text, then computes the final text with full context.
+13. Bit-exact kernels do not make transcripts identical across platforms: a one-in-a-million difference from `logf` grows to about 1 % in the logits through the dynamic int8 quantization, which can flip a marginal word (E12).
 
 ## 6. Threats to validity and open issues
 

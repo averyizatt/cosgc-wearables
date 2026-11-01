@@ -1,0 +1,147 @@
+ESP-ROM:esp32p4-eco7-20260109
+Build:Jan  9 2026
+rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+SPI mode:DIO, clock div:1
+load:0x4ffb60d0,len:0x173c
+load:0x4ffac2c0,len:0x104c
+load:0x4ffaefc0,len:0x3650
+entry 0x4ffac2c0
+I (25) boot: ESP-IDF 5.5.4 2nd stage bootloader
+I (26) boot: compile time Nov  1 2026 12:44:41
+I (26) boot: Multicore bootloader
+I (27) boot: chip revision: v3.2
+I (29) boot: efuse block revision: v1.2
+I (32) qio_mode: Enabling default flash chip QIO
+I (37) boot.esp32p4: SPI Speed      : 80MHz
+I (40) boot.esp32p4: SPI Mode       : QIO
+I (44) boot.esp32p4: SPI Flash Size : 32MB
+I (48) boot: Enabling RNG early entropy source...
+I (53) boot: Partition Table:
+I (55) boot: ## Label            Usage          Type ST Offset   Length
+I (61) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (68) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (74) boot:  2 factory          factory app      00 00 00010000 00100000
+I (81) boot:  3 lm               Unknown data     01 42 00110000 00400000
+I (87) boot:  4 audio            Unknown data     01 41 00510000 00100000
+I (94) boot:  5 model            Unknown data     01 40 00610000 01800000
+I (102) boot: End of partition table
+I (104) esp_image: segment 0: paddr=00010020 vaddr=40050020 size=0aad0h ( 43728) map
+I (118) esp_image: segment 1: paddr=0001aaf8 vaddr=30100000 size=0014ch (   332) load
+I (120) esp_image: segment 2: paddr=0001ac4c vaddr=30100150 size=00050h (    80) load
+I (128) esp_image: segment 3: paddr=0001aca4 vaddr=4ff40000 size=05374h ( 21364) load
+I (138) esp_image: segment 4: paddr=00020020 vaddr=40000020 size=43f10h (278288) map
+I (178) esp_image: segment 5: paddr=00063f38 vaddr=4ff45374 size=0afb8h ( 44984) load
+I (187) esp_image: segment 6: paddr=0006eef8 vaddr=4ff50380 size=02b88h ( 11144) load
+I (193) boot: Loaded app from partition at offset 0x10000
+I (193) boot: Disabling RNG early entropy source...
+I (206) hex_psram: vendor id    : 0x0d (AP)
+I (206) hex_psram: Latency      : 0x01 (Fixed)
+I (206) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (207) hex_psram: dev id       : 0x03 (generation 4)
+I (212) hex_psram: density      : 0x07 (256 Mbit)
+I (216) hex_psram: good-die     : 0x06 (Pass)
+I (220) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (225) hex_psram: BurstType    : 0x00 ( Wrap)
+I (229) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (233) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (238) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (243) hex_psram: DriveStrength: 0x00 (1/1)
+I (247) MSPI Timing: Enter psram timing tuning
+I (405) esp_psram: Found 32MB PSRAM device
+I (405) esp_psram: Speed: 200MHz
+I (406) hex_psram: psram CS IO is dedicated
+I (406) cpu_start: Multicore app
+I (851) esp_psram: SPI SRAM memory test OK
+I (860) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (860) cpu_start: Pro cpu start user code
+I (861) cpu_start: cpu freq: 400000000 Hz
+I (862) app_init: Application information:
+I (866) app_init: Project name:     oido
+I (870) app_init: App version:      555b1eb-dirty
+I (874) app_init: Compile time:     Nov  1 2026 13:36:42
+I (879) app_init: ELF file SHA256:  109a5bfad...
+I (884) app_init: ESP-IDF:          5.5.4
+I (887) efuse_init: Min chip rev:     v3.1
+I (891) efuse_init: Max chip rev:     v3.99 
+I (895) efuse_init: Chip rev:         v3.2
+I (899) heap_init: Initializing. RAM available for dynamic allocation:
+I (905) heap_init: At 4FF5CE40 len 0005E180 (376 KiB): RETENT_RAM
+I (911) heap_init: At 4FFBAFC0 len 00004BF0 (18 KiB): RAM
+I (916) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (922) heap_init: At 301001A0 len 00001E60 (7 KiB): TCM
+I (927) esp_psram: Adding pool of 32768K of PSRAM memory to heap allocator
+I (934) spi_flash: detected chip: gd
+I (936) spi_flash: flash io: qio
+I (940) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (946) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (953) main_task: Started on CPU0
+I (978) main_task: Calling app_main()
+CALIB 4M nops: cycles 12039669, time 30095 us
+P4SELFTEST dot_rows_s8 PASS (-371 vs -371)
+P4SELFTEST dot48_rows PASS
+P4SELFTEST gemm_s8_xr PASS
+P4SELFTEST gemm_blk16 PASS (QACC layout 1)
+P4SELFTEST ok: vector kernels on
+I (1017) tinyasr: dual-core enabled
+I (2899) tinyasr: model: 20381216 bytes read from flash at 0x610000 to PSRAM in 1879 ms
+I (2900) tinyasr: model blob 20381216 bytes; free PSRAM 13170480, internal 381460
+I (3034) tinyasr: LM 1253952 bytes in PSRAM, beam 4
+I (3034) tinyasr: NeMo conformer-ctc-small: 20292216 weight bytes, 0 moved to PSRAM | free PSRAM 10491696 internal 318888
+STREAM model: chunk/left defaults, stream ok
+UTT 0 | audio 7.00s | cycles 1798956994 | RTF 0.643 | wall 4497390 us | RTF_wall 0.643
+REF: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+HYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+STREAM 0 | feed cycles 1542231952 | finish cycles 136427488 (341 ms @240MHz) | RTF 0.600 | feed wall 3855579 us | finish wall 341071 us | RTF_wall 0.600
+SHYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+PACED 0 | audio 7.00s | last block fed 137 ms after the end of speech | final text 478 ms after the end of speech
+PHYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+UTT 1 | audio 7.00s | cycles 1794717551 | RTF 0.641 | wall 4486791 us | RTF_wall 0.641
+REF: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+HYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+STREAM 1 | feed cycles 1542661024 | finish cycles 136428376 (341 ms @240MHz) | RTF 0.600 | feed wall 3856652 us | finish wall 341073 us | RTF_wall 0.600
+SHYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+PACED 1 | audio 7.00s | last block fed 142 ms after the end of speech | final text 483 ms after the end of speech
+PHYP: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+UTT 2 | audio 6.23s | cycles 1607170615 | RTF 0.645 | wall 4017923 us | RTF_wall 0.645
+REF: no such authority was given for the court of appeal whose registries remained closed
+HYP: no such authority was given for the course of peal whose registries remained closed
+STREAM 2 | feed cycles 1271214650 | finish cycles 225538636 (564 ms @240MHz) | RTF 0.601 | feed wall 3178036 us | finish wall 563848 us | RTF_wall 0.601
+SHYP: no such authority was given for the course of peal whose registries remained closed
+PACED 2 | audio 6.23s | last block fed 1 ms after the end of speech | final text 565 ms after the end of speech
+PHYP: no such authority was given for the course of peal whose registries remained closed
+UTT 3 | audio 3.84s | cycles 982310307 | RTF 0.640 | wall 2455773 us | RTF_wall 0.640
+REF: yeah i think of it in terms of you know not even maybe to well
+HYP: yeah i think of it in terms of you know not even maybe to
+STREAM 3 | feed cycles 651702060 | finish cycles 297634050 (744 ms @240MHz) | RTF 0.618 | feed wall 1629254 us | finish wall 744087 us | RTF_wall 0.618
+SHYP: i think of it in terms of you know not even maybe to
+PACED 3 | audio 3.84s | last block fed 0 ms after the end of speech | final text 744 ms after the end of speech
+PHYP: i think of it in terms of you know not even maybe to
+STREAM mean finish 498 ms @240MHz, 498 ms wall
+TOTAL audio 24.1s cycles 6183155467 RTF@240MHz 0.643 wall RTF 0.643
+LEN  1 s | full-context wall 682 ms | RTF 0.682 | min free PSRAM 4734868
+LEN  2 s | full-context wall 1286 ms | RTF 0.643 | min free PSRAM 4640936
+LEN  3 s | full-context wall 1925 ms | RTF 0.642 | min free PSRAM 4549820
+LEN  5 s | full-context wall 3165 ms | RTF 0.633 | min free PSRAM 4364772
+LEN  8 s | full-context wall 5271 ms | RTF 0.659 | min free PSRAM 4085792
+LEN 12 s | full-context wall 8298 ms | RTF 0.692 | min free PSRAM 3715696
+LEN 16 s | full-context wall 11773 ms | RTF 0.736 | min free PSRAM 3342784
+LEN 20 s | full-context wall 15699 ms | RTF 0.785 | min free PSRAM 2972688
+MEM min free PSRAM 2972688 internal 95164
+PROF features      596324763 cycles   9.6%
+PROF conv0        1211409656 cycles  19.6%
+PROF im2col        539910630 cycles   8.7%
+PROF gemm_fe      3775309277 cycles  61.1%
+PROF gemm_k704    3571360686 cycles  57.8%
+PROF layernorm    1078031250 cycles  17.4%
+PROF gemm        10739815458 cycles 173.7%
+PROF quant        1313738927 cycles  21.2%
+PROF act                   0 cycles   0.0%
+PROF qkv_int8     1852415535 cycles  30.0%
+PROF pos           623923593 cycles  10.1%
+PROF attention    5030344229 cycles  81.4%
+PROF dwconv       1497564218 cycles  24.2%
+PROF head+dec     3326644068 cycles  53.8%
+PROF (decoder)    3102588419 cycles  50.2%
+PROF (lm)        2430982444 cycles in 572 GRU steps, 1891 rows
+DONE
+I (108311) main_task: Returned from app_main()

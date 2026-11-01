@@ -11,7 +11,12 @@
 #else
 #define MIC_RING_SAMPLES (16000 * 16)
 #endif
-#define MIC_UTT_SAMPLES (16000 * 20)  // recording buffer: the VAD segmenter, or push-to-talk with an utterance model
+#define MIC_UTT_SAMPLES (16000 * 20)  // recording buffer: the VAD segmenter, push-to-talk with an utterance model or with TASR_FINAL_FULL
+#ifdef CONFIG_TASR_FINAL_FULL
+#define MIC_FINAL_FULL 1
+#else
+#define MIC_FINAL_FULL 0
+#endif
 // PSRAM for the ring and, when used, the recording buffer
 #define MIC_PSRAM(streaming)                                                                                             \
-    ((size_t)MIC_RING_SAMPLES * 2 + ((CONFIG_TASR_PTT_GPIO >= 0 && (streaming)) ? 0 : (size_t)MIC_UTT_SAMPLES * 2))
+    ((size_t)MIC_RING_SAMPLES * 2 + ((CONFIG_TASR_PTT_GPIO >= 0 && (streaming) && !MIC_FINAL_FULL) ? 0 : (size_t)MIC_UTT_SAMPLES * 2))
