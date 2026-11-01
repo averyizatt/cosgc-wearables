@@ -677,6 +677,68 @@ language model, not the depth.
 real time. The margin is only 3 %, this benchmark has no microphone capture running, and four clips are few. The second core is idle and is the obvious
 source of headroom. Compute grew by 29 % for 50 % more encoder layers, because the decoder and front end do not grow.
 
+**Both cores, and the language model as stored (2026-11-01).** Envs `oido_p4_bench_2c`, `oido_p4_2c` (spin-wait jobs, as on the S3). A
+correction to earlier numbers: the firmware re-quantizes the language model to int4 when loading it (`CONFIG_TASR_LM_INT4`, written for the
+S3's slower PSRAM), while every host evaluation with the LM used int8. So LM scores in this log described a slightly different LM from the one on
+the device. The P4 now keeps int8 (`sdkconfig.p4`), which matches the host and can also be split across the cores. big2, same four clips:
+
+| | one core, int4 LM | two cores, int4 LM | two cores, int8 LM |
+|---|---|---|---|
+| wall RTF | 0.967 | 0.647 | **0.602** |
+| decoder, of which LM (cycles) | 1.94 G, 1.77 G | 1.97 G, 1.79 G | **1.08 G, 0.85 G** |
+| final text after end of speech, paced, at most | 1120 ms | | **745 ms** |
+| minimum free PSRAM | 6.5 MB | 6.5 MB | 6.0 MB |
+| transcripts against the host engine | identical | identical | identical |
+
+Logs: `docs/results/p4_bench_big2_2c.log`, `p4_bench_big2_2c_lm8.log`, and `p4_bench_big2q121_2c.log` (the E10 export, RTF 0.603, again identical to the host).
+The microphone firmware on two cores boots ready in 3.2 s and ran 90 s with no crash; the screen code logged "no SSD1306" as designed (none attached). Nobody
+has spoken at it yet, and the S3's two-core mode had transcript errors with its original kernels, so transcripts during live use still need checking.
+
+### E10. Most of a fine-tune was lost at export: the int8 grid (2026-11-01)
+
+**Question:** Finding 18 showed the int8 loss comes from weight rounding, with a guess about why. Why would 8 bits hurt a fine-tune and not the shipped model?
+
+**Measurements** (`train/quant_stats.py`, `train/quant_survival.py`; CPU, no audio):
+
+- The clipping idea from E8b is **refuted**: per-row max/rms is only about 3, and the MSE-optimal per-row scale gains 0.00 dB.
+- Rounding error against the size of the fine-tune's change is almost exactly 1.0 in nearly all layers, as it would be if changes rounded back to their start.
+- The shipped weights lie exactly on the grid `max|w|/127`, and a change under half a step returns to the starting value:
+
+| Fine-tune | grid | share of the change kept | weights whose rounded value changed | SNR of the rounded weights |
+|---|---|---|---|---|
+| atyp2 | 127 (old) | **11.6 %** | 1.7 % | 52.6 dB |
+| atyp2 | 125 | 92.3 % | 8.7 % | 41.7 dB |
+| atyp2 | **121** | **99.2 %** | 8.7 % | 40.8 dB |
+| atyp2 | 113 | 98.5 % | 8.0 % | 39.9 dB |
+| big2 | 127 (old) | **22.5 %** | 14.7 % | 53.1 dB |
+| big2 | **121** | **99.3 %** | 20.5 % | 41.1 dB |
+| big2q | 127 (old) | 23.2 % | 14.8 % | 52.8 dB |
+| big2q | 121 | 99.3 % | 20.8 % | 41.1 dB |
+
+**Fix:** round on a different grid, `max|w|/121`, so rounding no longer cancels small changes. The rounding noise is real now (about 41 dB, 12 dB
+worse), but it is unrelated to the change and averages out over a row: dithering, in effect. We chose 121 from the table above, before scoring anything, and did not tune
+it on test data. `export_nemo.py` uses it for any fine-tune (`FINE_TUNE_QMAX`); with no checkpoint it stays on 127, so the shipped export does not change. `TASR_FQ_QMAX=121` makes
+the PyTorch simulation match.
+
+**Results, TORGO test, streaming, C engine (WER %), full test set:**
+
+| | PyTorch float | engine, old export | engine, **new** | engine + LM, old | engine + LM, **new** |
+|---|---|---|---|---|---|
+| atyp2 | 30.11 | 33.67 | **30.11** | 30.87 | **27.82** |
+| big2 | 27.55 | 28.49 | **27.52** | 26.23 | **25.14** |
+| big2q | | 28.26 | 27.66 | 25.96 | 25.19 |
+| big3 (E11) | 29.61 | | 29.65 | | |
+
+big2, engine + LM, new export, against the shipped model's engine score without LM (37.37; dysarthric 68.39): all 25.14, dysarthric 51.17, control 12.90, F03 41.80, M05 68.91, FC03
+12.50, MC04 13.37, sentences 21.57, words 34.26. For the same model on the old export: 26.23, 52.90, 13.69, 43.35, 70.97, 13.45, 13.97, 21.65, 37.95.
+Every speaker and slice improved. Every-5th-clip check first (greedy): atyp2 33.63 → 29.23, big2 27.72 → 26.16. Results in `esp32/host`-format JSON on the laptop (`*_q121_*`); LibriSpeech and UASpeech
+are in the PyTorch queue `train/runs/q121eval.cmd`.
+
+**Finding 21:** the int8 loss was not a limit of 8 bits. It was an artifact of rounding a fine-tune on the grid of the model it started from, which threw away 77 to 88 % of the weight change. A
+different grid removes the loss entirely: engine scores now equal float (30.11 = 30.11; 27.52 against 27.55), at no cost in size, speed or training. This should apply to
+anyone fine-tuning an already-quantized model. **Consequences:** E8's Finding 13 and E8b's Finding 18 correctly describe the old exporter, not a limit of the device. Quantization-aware
+training is not needed on this model: big2q gains nothing over big2 on the new grid (25.19 against 25.14). All engine results before this entry understate the fine-tunes.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -697,10 +759,12 @@ source of headroom. Compute grew by 29 % for 50 % more encoder layers, because t
    corpus (UASpeech B2) the 24-layer model is no better than the 16-layer one, so part of the depth gain may be
    TORGO-specific (E7).
 9. TORGO fine-tuning improves an unseen corpus too (UASpeech B2: 72.8 → 66.5 % streaming, dysarthric 100 → 91.5).
-10. Nearly all of the int8 loss of a float fine-tune comes from weight rounding, not activations (E8b).
-11. On real hardware, the shipped model streams at 0.759 times real time on one ESP32-P4 core at 400 MHz, about twice as fast
+10. Nearly all of the int8 loss of a float fine-tune comes from weight rounding, not activations (E8b), and the cause is the grid:
+    the shipped weights sit exactly on it, so 77 to 88 % of the fine-tune's change rounded away. A different grid keeps 99 % of it and removes
+    the loss entirely (E10). On the device arithmetic with the language model, the 24-layer model reaches 25.1 % WER on TORGO test.
+11. On real hardware, the shipped model streams at 0.748 times real time on one ESP32-P4 core at 400 MHz, about twice as fast
     as the ESP32-S3, with transcripts identical to the host engine on four clips (E9). The 24-layer model, our most accurate,
-    also streams in real time on one core at 0.967, with little margin and the second core still idle (E9b).
+    runs at 0.967 on one core and 0.602 on two (E9b). Nobody has yet spoken at the live firmware.
 
 ## 6. Threats to validity and open issues
 

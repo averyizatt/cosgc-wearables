@@ -12,6 +12,9 @@ from export import W
 from nemo_small import NemoSmall
 
 
+FINE_TUNE_QMAX = 121
+
+
 def export(d, out, bits=8, ckpt=None, tokenizer=None, chunk=32, left=128):
     # CTC model: state_dict_plain.pt (fetch_nemo_small.py); transducer: model_weights.ckpt unpacked from the .nemo
     path = f"{d}/state_dict_plain.pt" if os.path.exists(f"{d}/state_dict_plain.pt") else f"{d}/model_weights.ckpt"
@@ -35,6 +38,11 @@ def export(d, out, bits=8, ckpt=None, tokenizer=None, chunk=32, left=128):
     sp = spm.SentencePieceProcessor(model_file=tokenizer)
     V = sp.get_piece_size()
     w = W()
+    # A fine-tune must not round on the grid of the model it started from. The shipped weights sit exactly on the max/127
+    # grid, so a change under half a step rounds back to where it started: only 12 to 23 % of a fine-tune's change survived
+    # (train/quant_survival.py, docs/EXPERIMENTS.md, E10). Another grid keeps 99 % of it, at a real but harmless noise.
+    if ckpt:
+        w.qmax8 = float(os.environ.get("TASR_EXPORT_QMAX", FINE_TUNE_QMAX))
     L0 = m.layers[0]  # sizes from the model (grow_nemo.py makes deeper ones; the engine reads them from this header)
     w.buf += b"TNM1" + struct.pack("<15I", 1, m.d, L0.h, L0.ff1_l1.out_features, L0.dw.kernel_size[0], len(m.layers),
                                    m.conv0.out_channels, V, bits, int(rnnt), flags,

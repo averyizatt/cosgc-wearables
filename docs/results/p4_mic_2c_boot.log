@@ -1,0 +1,97 @@
+ESP-ROM:esp32p4-eco7-20260109
+Build:Jan  9 2026
+rst:0x1 (POWERON),boot:0x20f (SPI_FAST_FLASH_BOOT)
+SPI mode:DIO, clock div:1
+load:0x4ffb60d0,len:0x173c
+load:0x4ffac2c0,len:0x104c
+load:0x4ffaefc0,len:0x3650
+entry 0x4ffac2c0
+I (25) boot: ESP-IDF 5.5.4 2nd stage bootloader
+I (26) boot: compile time Nov  1 2026 02:18:24
+I (26) boot: Multicore bootloader
+I (27) boot: chip revision: v3.2
+I (29) boot: efuse block revision: v1.2
+I (32) qio_mode: Enabling default flash chip QIO
+I (37) boot.esp32p4: SPI Speed      : 80MHz
+I (40) boot.esp32p4: SPI Mode       : QIO
+I (44) boot.esp32p4: SPI Flash Size : 32MB
+I (48) boot: Enabling RNG early entropy source...
+I (53) boot: Partition Table:
+I (55) boot: ## Label            Usage          Type ST Offset   Length
+I (61) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (68) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (74) boot:  2 factory          factory app      00 00 00010000 00100000
+I (81) boot:  3 lm               Unknown data     01 42 00110000 00400000
+I (87) boot:  4 audio            Unknown data     01 41 00510000 00100000
+I (94) boot:  5 model            Unknown data     01 40 00610000 01800000
+I (102) boot: End of partition table
+I (104) esp_image: segment 0: paddr=00010020 vaddr=40060020 size=0f590h ( 62864) map
+I (121) esp_image: segment 1: paddr=0001f5b8 vaddr=30100000 size=0014ch (   332) load
+I (122) esp_image: segment 2: paddr=0001f70c vaddr=30100150 size=00050h (    80) load
+I (128) esp_image: segment 3: paddr=0001f764 vaddr=4ff40000 size=008b4h (  2228) load
+I (135) esp_image: segment 4: paddr=00020020 vaddr=40000020 size=58ed4h (364244) map
+I (189) esp_image: segment 5: paddr=00078efc vaddr=4ff408b4 size=12f7ch ( 77692) load
+I (202) esp_image: segment 6: paddr=0008be80 vaddr=4ff53880 size=02f58h ( 12120) load
+I (210) boot: Loaded app from partition at offset 0x10000
+I (210) boot: Disabling RNG early entropy source...
+I (222) hex_psram: vendor id    : 0x0d (AP)
+I (222) hex_psram: Latency      : 0x01 (Fixed)
+I (222) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (223) hex_psram: dev id       : 0x03 (generation 4)
+I (227) hex_psram: density      : 0x07 (256 Mbit)
+I (232) hex_psram: good-die     : 0x06 (Pass)
+I (236) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (241) hex_psram: BurstType    : 0x00 ( Wrap)
+I (245) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (249) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (254) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (259) hex_psram: DriveStrength: 0x00 (1/1)
+I (263) MSPI Timing: Enter psram timing tuning
+I (421) esp_psram: Found 32MB PSRAM device
+I (421) esp_psram: Speed: 200MHz
+I (422) hex_psram: psram CS IO is dedicated
+I (422) cpu_start: Multicore app
+I (867) esp_psram: SPI SRAM memory test OK
+I (876) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (876) cpu_start: Pro cpu start user code
+I (877) cpu_start: cpu freq: 400000000 Hz
+I (878) app_init: Application information:
+I (882) app_init: Project name:     oido
+I (886) app_init: App version:      7d79737-dirty
+I (890) app_init: Compile time:     Nov  1 2026 10:05:43
+I (895) app_init: ELF file SHA256:  3fa2986a2...
+I (900) app_init: ESP-IDF:          5.5.4
+I (903) efuse_init: Min chip rev:     v3.1
+I (907) efuse_init: Max chip rev:     v3.99 
+I (911) efuse_init: Chip rev:         v3.2
+I (915) heap_init: Initializing. RAM available for dynamic allocation:
+I (921) heap_init: At 4FF639F0 len 000575D0 (349 KiB): RETENT_RAM
+I (927) heap_init: At 4FFBAFC0 len 00004BF0 (18 KiB): RAM
+I (932) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (938) heap_init: At 301001A0 len 00001E60 (7 KiB): TCM
+I (943) esp_psram: Adding pool of 32768K of PSRAM memory to heap allocator
+I (950) spi_flash: detected chip: gd
+I (952) spi_flash: flash io: qio
+I (956) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (962) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (969) main_task: Started on CPU0
+I (994) main_task: Calling app_main()
+CALIB 4M nops: cycles 12040474, time 30097 us
+P4SELFTEST dot_rows_s8 PASS (-371 vs -371)
+P4SELFTEST dot48_rows PASS
+P4SELFTEST gemm_s8_xr PASS
+P4SELFTEST gemm_blk16 PASS (QACC layout 1)
+P4SELFTEST ok: vector kernels on
+I (1033) tinyasr: dual-core enabled
+I (2910) tinyasr: model: 20381216 bytes read from flash at 0x610000 to PSRAM in 1874 ms
+I (2911) tinyasr: model blob 20381216 bytes; free PSRAM 13170480, internal 353892
+I (3045) tinyasr: LM 1253952 bytes in PSRAM, beam 4
+I (3568) tinyasr: stream needs 4491408 bytes of PSRAM; the rest caches weights
+I (3568) tinyasr: NeMo conformer-ctc-small: 20292216 weight bytes, 0 moved to PSRAM | free PSRAM 10491696 internal 291320
+E (3576) i2c.master: this port has not been initialized, please initialize it first
+I (3583) codec: chip id 0x8311 version 0x01 (an ES8311 reads 83 11)
+I (3610) codec: ES8311 set up: 16 kHz, mic gain 24 dB
+I (3613) mic: listening (BCLK 12 WS 10 DIN 11)
+W (3613) oled: no SSD1306 at 0x3c (SDA 7, SCL 8); transcript on serial only
+{"type":"hello","api":1,"fw":"7d79737-dirty","mode":"streaming","lm":true,"ptt":false,"ble":false,"cores":2,"uptime_s":3,"psram_free":4805216,"internal_free":160128}
+ready (streaming, 3.19 s after boot): speak, partial text follows you, the final line prints after each pause

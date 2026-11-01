@@ -24,6 +24,8 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 CONFIG_TASR_LM_WEIGHT_X100=30
 CONFIG_TASR_TOKEN_BONUS_X100=50
+# the language model as stored (int8), as in the host evaluations; int4 is an S3 trick for its slower PSRAM, and int8 rows can use both cores
+# CONFIG_TASR_LM_INT4 is not set
 # no S3 cache prefetch registers on the P4
 CONFIG_TASR_EXP_DCACHE_AUTOLOAD=-1
 # vector kernels, self-checked at boot against plain C (set to n if the board crashes before the P4SELFTEST lines)
@@ -39,7 +41,12 @@ CONFIG_TASR_I2S_MCLK=13
 CONFIG_TASR_CODEC_I2C_SDA=7
 CONFIG_TASR_CODEC_I2C_SCL=8
 CONFIG_TASR_PA_GPIO=53
-# no screen or LED on the board; a push button on a header pin can be added with CONFIG_TASR_PTT_GPIO (-1: the VAD ends utterances)
+# SSD1306 128x64 OLED on the codec's I2C bus (0x3C, VCC to 3V3): safe to leave on without a screen, the firmware logs a warning
+CONFIG_TASR_OLED=y
+CONFIG_TASR_OLED_SDA=7
+CONFIG_TASR_OLED_SCL=8
+CONFIG_TASR_OLED_ADDR=0x3C
+# no LED on the board; a push button on a header pin can be added with CONFIG_TASR_PTT_GPIO (-1: the VAD ends utterances)
 CONFIG_TASR_SEG_HANG_MS=800
 CONFIG_TASR_PTT_GPIO=-1
 CONFIG_TASR_LED_GPIO=-1

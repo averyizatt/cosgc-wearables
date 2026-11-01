@@ -12,6 +12,7 @@ VERSION = 2  # v2: int4 layers with N % 16 == 0 use the blocked16 layout
 
 
 class W:
+    qmax8 = None  # int8 grid: None = max|w| at 127 (see FINE_TUNE_QMAX in export_nemo.py)
     def __init__(self):
         self.buf = bytearray()
 
@@ -28,6 +29,8 @@ class W:
         w = w.detach().cpu().float().reshape(w.shape[0], -1)
         n, k = w.shape
         qmax = 2 ** (bits - 1) - 1
+        if bits == 8 and self.qmax8:
+            qmax = self.qmax8
         s = w.abs().amax(1).clamp(min=1e-8) / qmax
         q = torch.clamp(torch.round(w / s[:, None]), -qmax, qmax).to(torch.int8)
         blocked = bits == 4 and n % 16 == 0

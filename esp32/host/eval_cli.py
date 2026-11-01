@@ -44,6 +44,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--wavs", default=os.path.expanduser("~/eval_cli_wavs"))
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--chunk", type=int, default=0, help="with --stream: encoder frames per chunk (0: stored in the model)")
+    ap.add_argument("--left", type=int, default=0, help="with --stream: left context in frames (0: stored in the model)")
     a = ap.parse_args()
     items = [json.loads(l) for l in open(a.manifest, encoding="utf-8") if l.strip()]
     if a.limit:
@@ -62,7 +64,7 @@ def main():
         with wave.open(it["_wav"], "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
             w.writeframes(packs[p].read(2 * it["n"]))
-    cli = [os.path.join(HERE, "tasr_cli"), a.model] + (["--stream"] if a.stream else [])
+    cli = [os.path.join(HERE, "tasr_cli"), a.model] + (["--stream", "--nchunk", str(a.chunk), "--nleft", str(a.left)] if a.stream else [])
     if a.lm:
         cli += ["--lm", a.lm, "--beam", str(a.beam)]
         cli += ["--lm_weight", str(a.lm_weight)] if a.lm_weight is not None else []

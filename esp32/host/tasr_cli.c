@@ -66,10 +66,12 @@ int main(int argc, char **argv)
         return 1;
     }
     const char *lm_path = NULL;
-    int chunk = 32, left = 4, first = 2, beam = 4, stream = 0;
+    int chunk = 32, left = 4, first = 2, beam = 4, stream = 0, nchunk = 0, nleft = 0;
     float lw = -1.f, tb = -1.f;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--stream")) { stream = 1; first = i + 1; }
+        if (!strcmp(argv[i], "--nchunk") && i + 1 < argc) { nchunk = atoi(argv[++i]); first = i + 1; }  // .tnm streaming; 0 = stored in the model
+        if (!strcmp(argv[i], "--nleft") && i + 1 < argc) { nleft = atoi(argv[++i]); first = i + 1; }
         if (!strcmp(argv[i], "--lm") && i + 1 < argc) { lm_path = argv[++i]; first = i + 1; }
         else if (!strcmp(argv[i], "--chunk") && i + 1 < argc) { chunk = atoi(argv[++i]); first = i + 1; }
         else if (!strcmp(argv[i], "--left") && i + 1 < argc) { left = atoi(argv[++i]); first = i + 1; }
@@ -103,7 +105,7 @@ int main(int argc, char **argv)
         if (lm) tasr_stream_set_decoder(s, tasr_decoder_create(lm, 257, beam, 6, lw < 0 ? 0.5f : lw, tb < 0 ? 2.0f : tb));
     }
     static char text[16384];
-    tasr_nemo_stream_t *ns_ = nemo && stream ? tasr_nemo_stream_new(nm, 0, 0, dec) : NULL;
+    tasr_nemo_stream_t *ns_ = nemo && stream ? tasr_nemo_stream_new(nm, nchunk, nleft, dec) : NULL;
     for (int i = first; i < argc; i++) {
         int ns = 0;
         int16_t *pcm = read_wav(argv[i], &ns);

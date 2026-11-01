@@ -4,6 +4,7 @@ fq_weight: per-output-row symmetric int8/int4 weights; fq_act / fq_rows: dynamic
 (the C code computes inv = 127 / max, q = rint(x * inv), dequantizes with max / 127).
 Used by train_nemo_qat.py and train_nemo_stream.py.
 """
+import os
 import torch
 
 
@@ -24,6 +25,8 @@ def rnd(x):
 def fq_weight(w, bits):
     """w: (N, K). symmetric per-row."""
     qmax = 2 ** (bits - 1) - 1
+    if bits == 8 and os.environ.get("TASR_FQ_QMAX"):  # to simulate export_nemo.py's grid for a fine-tune (FINE_TUNE_QMAX)
+        qmax = float(os.environ["TASR_FQ_QMAX"])
     s = w.detach().abs().amax(1, keepdim=True).clamp(min=1e-8) / qmax
     return torch.clamp(rnd(w / s), -qmax, qmax) * s
 
