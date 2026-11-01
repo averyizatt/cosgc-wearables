@@ -12,8 +12,3 @@ endif()
 if(CONFIG_TASR_O3)
     target_compile_options(${COMPONENT_LIB} PRIVATE -O3 -funroll-loops)  # after -O2: the last -O wins
 endif()
-
-if(CONFIG_TASR_P4_PIE)
-    # esp.* vector instructions for the ESP32-P4 (IDF's default -march may not include them)
-    set_source_files_properties(kernels.c PROPERTIES COMPILE_OPTIONS "-march=rv32imafc_zicsr_zifencei_xesppie")
-endif()

@@ -546,6 +546,100 @@ without quantization-aware training. With the language model it reaches 26.2 % o
 (30 % relative) below the shipped model, 15.5 points below it for the dysarthric speakers (68.4 → 52.9). On the 46
 clips with a transcript unseen in training: 32.4 % greedy, 27.9 % with LM (rest 28.4 / 26.2).
 
+### E8b. atyp2q: quantization-aware fine-tune, and where the int8 loss comes from (2026-10-31)
+
+**atyp2q:** atyp2 plus 1000 steps with `--bits 8` (`train/runs/atyp2q.cmd`). Validation 6.66 full / 9.07 streaming at the
+start, 6.57 / 8.96 at the end. TORGO test, streaming:
+
+| | atyp2, engine | atyp2, engine + LM | atyp2q, PyTorch `--bits 8` | atyp2q, engine | atyp2q, engine + LM |
+|---|---|---|---|---|---|
+| all | 33.67 | 30.87 | 32.66 | 32.47 | 29.84 |
+| dysarthric / control | 63.56 / 19.61 | 59.55 / 17.38 | | 62.02 / 18.57 | 58.15 / 16.52 |
+| F03 | 53.27 | 49.51 | 52.46 | 52.01 | 48.35 |
+| M05 | 83.02 | 78.56 | 81.49 | 80.96 | 76.70 |
+| FC03 | 20.05 | 17.41 | 18.63 | 18.63 | 16.31 |
+| MC04 | 19.07 | 17.34 | 18.61 | 18.49 | 16.79 |
+| sentences / words | 27.06 / 50.55 | 23.6 / 49.45 | | 26.66 / 47.3 | 23.3 / 46.54 |
+
+PyTorch full context with `--bits 8`: 25.74; LibriSpeech test-clean 6.16 streaming, 4.02 full. The simulation matches the
+engine (32.66 against 32.47), so it can be trusted for quantization experiments.
+
+**Which part of int8 causes the loss** (`eval_manifest.py --fq`, atyp2, every 5th TORGO test clip, streaming WER %):
+
+| | none (float) | attention rows only | activations only | weights only | all three |
+|---|---|---|---|---|---|
+| all | 29.24 | 29.39 | 29.77 | **33.22** | 33.11 |
+| F03 / M05 | 44.67 / 76.74 | | | 49.24 / 80.4 | |
+| FC03 / MC04 | 15.84 / 16.25 | | | 19.98 / 19.73 | |
+
+atyp2q's float weights on the same subset score 29.8.
+
+**Finding 18:** nearly all of atyp2's int8 loss is weight rounding (29.24 → 33.22); activations and attention rows cost
+about 0.5 and 0.15 points. 1000 steps of quantization-aware training recover only 1.2 of the 3.6 points. **Hypothesis, not
+tested:** the shipped weights already sit on the int8 grid, so small fine-tune changes are partly rounded away, while big2's
+new layers have small weights and therefore a fine per-row scale. To try: a clipped or MSE-optimal per-row scale at export
+(`export_nemo.py`, no engine change) and quantization-aware training for the whole run.
+
+**Failure (my error, 2026-10-31):** that diagnosis ran on the GPU next to big2q. Training holds about 11.2 GB, the ProtonVPN
+client 2.4 GB and the evaluation 485 MB, on a 12 GB card. Both crawled for about 10 hours: big2q started at 10:23 and had
+reached step 400 by 15:58, with no error and a normal-looking log. Stopping the last, redundant variant of the diagnosis
+freed it at once (steps 400 to 500 had taken 4.4 hours). Not an accuracy problem, but the wall-clock times of big2q (37274 s)
+are not comparable with other runs. Rule since then: no GPU job next to training; check the log's last-write time.
+
+### E9. First run on real hardware: ESP32-P4 (2026-10-31)
+
+**Board:** plugged in over a CH343 USB-serial bridge (VID 1A86 PID 55D3, COM3) to UART0, not the native USB-Serial/JTAG.
+ESP32-P4 revision v3.2 (ROM `esp32p4-eco7-20260109`), 400 MHz measured (12,039,016 cycles in 30,097 µs), 32 MB PSRAM (hex,
+200 MHz), GigaDevice flash c8/4019, 32 MB. The exact board model is still assumed (Waveshare ESP32-P4-Pico); the codec's
+chip id will confirm the pins. Firmware: `oido_p4_bench`, ESP-IDF 5.5.4, one core, model `models/oido_stream.tnm` (shipped,
+16 layers, 13 M parameters), LM `models/nemo_lm.tlm`, beam 4, four clips totalling 24.1 s.
+
+**Results:** self-test of the vector kernels against plain C: all four PASS (QACC layout 1). Transcripts are
+word-for-word identical to the host engine on all four clips.
+
+| One core, streaming | S3, 240 MHz | P4, 400 MHz, plain C | P4, 400 MHz, vector kernels |
+|---|---|---|---|
+| wall RTF (compute time / audio time) | 1.54 | 5.25 (corrupted model, see below) | **0.759** |
+
+Mean compute left after the last audio block: 542 ms; final text at most 822 ms after the end of speech in the paced runs. Minimum
+free memory: PSRAM 15.4 MB, internal 267 KB. Share of the run: decoder 26.7 % (language model most of it, 200 GRU steps),
+`gemm` 56.4 % (of which 704-wide feed-forward layers 19.4 %), attention 12.5 %, depthwise convolution 8.4 %, features 5.6 %.
+Log: `docs/results/p4_bench_13m.log`. The plain-C figure comes from a run with part of the model overwritten (bug 3 below);
+its transcript was wrong, so it is a timing comparison only: the vector kernels make the whole system about 6.9 times
+faster, and `gemm` alone about 8.2 times (33.9 G against 4.12 G cycles).
+
+**Finding 19:** the shipped model streams faster than real time on one P4 core with the same transcripts as the host, about
+twice as fast as the S3 (1.54 → 0.759). One core is idle, so there is headroom for a larger model; big2's speed is not measured
+yet (it needs bug 3 fixed properly).
+
+**Three bugs only the hardware could reveal** (none is visible in a host build, and each was found by a measurement):
+
+1. **Wrong vector instruction encoding (mine).** `kernels.c` was compiled with `-march=..._xesppie` because I assumed IDF's
+   default might lack the vector instructions. IDF's default for this chip is `xesploop_xespv`, and the same mnemonic assembles
+   differently (`esp.zero.xacc`: `0x5b` against `0x1b`). The first vector instruction crashed the board with an
+   undocumented cause (`MCAUSE 0x1f`, later `0x7` with a nonsense address). Removing my override fixed it. A build system
+   detail cost one more round: PlatformIO re-reads CMake only when the top-level `CMakeLists.txt` changes, so the first rebuild
+   silently kept the old flag; checking the object file's `Tag_RISCV_arch` showed that.
+2. **esptool's stub flasher does not work on this chip** (esptool 4.11 and 5.2.0, every baud rate): "Invalid head of packet
+   (0x61)" or "The chip stopped responding". The ROM loader works up to at least 2 Mbaud, so we use `--no-stub`. The ROM on this
+   chip is dated 2026; a stub depending on older ROM addresses is a plausible cause, not a confirmed one.
+3. **Flash above 16 MB wraps around (a design error of mine).** I laid out the 32 MB flash with the language model at
+   `0x1A10000` and the clips at `0x1E10000`. Without 32-bit addressing these writes land at `0xA10000` and `0xE10000`, inside the
+   model. Every per-image hash passed because reading back wraps the same way. Symptom: the same nonsense for every clip
+   ("the fors to the fors..."), with plain C and vector kernels alike. Found by bisection: C kernels (not the vectors), audio
+   hash and features (match the host to 5 decimals), per-layer values (identical up to layer 8, `inf` in layer 9), then a hash of
+   every stored parameter, then `verify-flash` of the whole image. **Proof:** `lm.bin` and `audio.bin` match the flash exactly at
+   the wrapped addresses, and the damaged model blocks are exactly the offsets predicted (`0x800000`-`0x93FFFF`, `0xC00000`-`0xCBFFFF`).
+   Fix for now: all images below 16 MB. A 19 M model does not fit that way.
+
+A lesson for the method: self-tests and per-image hashes passed throughout, and the only reliable check was comparing the
+transcript and every intermediate result with the host.
+
+**Other failures on the way:** I killed a PlatformIO run during tool installation, which removed the toolchain; editing
+`platformio.ini` while it is open in VS Code starts the PlatformIO extension's `project init`, which rewrites the shared package
+folder underneath a running build (it broke one flash attempt); my build watcher read only stdout while failures go to stderr, which
+hid a failed build for two hours.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -566,6 +660,10 @@ clips with a transcript unseen in training: 32.4 % greedy, 27.9 % with LM (rest 
    corpus (UASpeech B2) the 24-layer model is no better than the 16-layer one, so part of the depth gain may be
    TORGO-specific (E7).
 9. TORGO fine-tuning improves an unseen corpus too (UASpeech B2: 72.8 → 66.5 % streaming, dysarthric 100 → 91.5).
+10. Nearly all of the int8 loss of a float fine-tune comes from weight rounding, not activations (E8b).
+11. On real hardware, the shipped model streams at 0.759 times real time on one ESP32-P4 core at 400 MHz, about twice as fast
+    as the ESP32-S3, with transcripts identical to the host engine on four clips (E9). The speed of the 24-layer model on the
+    chip is not measured yet.
 
 ## 6. Threats to validity and open issues
 

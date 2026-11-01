@@ -1,8 +1,10 @@
-# ESP32-P4-Pico: 32 MB flash. Model, LM and clips sit where the 16 MB layout has them, relative sizes unchanged but with
-# room to grow: 16 MB for the model (a larger one fits), 4 MB for the LM, about 9 MB left over at the end.
+# ESP32-P4-Pico. The chip has 32 MB of flash, but everything must stay below 16 MB for now: without 32-bit addressing, an
+# address above 16 MB wraps around (0x1A10000 reads and writes 0xA10000), both in the ROM loader and through the cache.
+# Exactly 16 MB: 512 KB app, 13.7 MB model (the 16-layer model is 13.3 MB; the 24-layer model does not fit), 1.3 MB LM,
+# 768 KB of benchmark clips. See docs/P4.md.
 nvs,      data, nvs,     0x9000,    0x6000
 phy_init, data, phy,     0xf000,    0x1000
-factory,  app,  factory, 0x10000,   0x200000
-model,    data, 0x40,    0x210000,  0x1000000
-lm,       data, 0x42,    0x1210000, 0x400000
-audio,    data, 0x41,    0x1610000, 0x100000
+factory,  app,  factory, 0x10000,   0x80000
+model,    data, 0x40,    0x90000,   0xD60000
+lm,       data, 0x42,    0xDF0000,  0x150000
+audio,    data, 0x41,    0xF40000,  0xC0000

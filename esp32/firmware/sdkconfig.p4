@@ -1,4 +1,4 @@
-# Waveshare ESP32-P4-Pico (ESP32-P4NRW32): not tested on hardware. Used instead of sdkconfig.defaults (that file is S3).
+# ESP32-P4 board (ESP32-P4NRW32): the benchmark runs on real hardware, the microphone path not yet. Used instead of sdkconfig.defaults (that file is S3).
 CONFIG_IDF_TARGET="esp32p4"
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
@@ -9,7 +9,7 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
 CONFIG_CACHE_L2_CACHE_256KB=y
@@ -17,8 +17,10 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_ESP_TASK_WDT_EN=n
 CONFIG_ESP_INT_WDT=n
 CONFIG_FREERTOS_HZ=1000
-# the USB-C port; the device API reads and writes the same USB-Serial/JTAG
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# this board's USB port is a CH343 bridge to UART0 (it shows up as a COM port; the ROM log appears there), not the chip's
+# USB-Serial/JTAG; the device API reads and writes the same UART
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 CONFIG_TASR_LM_WEIGHT_X100=30
 CONFIG_TASR_TOKEN_BONUS_X100=50

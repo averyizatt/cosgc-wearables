@@ -12,6 +12,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hal/usb_serial_jtag_ll.h"
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+#include "driver/uart.h"
+#endif
 #include "cJSON.h"
 #include "oled.h"  // TASR_AUX_CORE
 #include "sdkconfig.h"
@@ -261,18 +264,27 @@ void api_handle_line(const char *text)
     cJSON_Delete(j);
 }
 
-// USB serial port reader: the console reads UART, so the USB-Serial/JTAG receive FIFO is polled directly
+// USB serial port reader. S3: the console reads UART, so the USB-Serial/JTAG receive FIFO is polled directly.
+// P4 board: the USB port is a CH343 bridge to the console UART, read through the driver (its FIFO alone overflows on long lines).
 static void rx_task(void *arg)
 {
     (void)arg;
     static char line[RX_MAX_BYTES];
     int n = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 2048, 0, 0, NULL, 0);
+#endif
     for (;;) {
         uint8_t b[64];
         int got = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+        got = uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, b, sizeof(b), pdMS_TO_TICKS(20));
+        if (got < 0) got = 0;
+#else
         while (usb_serial_jtag_ll_rxfifo_data_available() && got < (int)sizeof(b)) {
             got += usb_serial_jtag_ll_read_rxfifo(b + got, sizeof(b) - got);
         }
+#endif
         for (int i = 0; i < got; i++) {
             if (b[i] == '\n' || b[i] == '\r') {
                 if (n) { line[n] = 0; api_handle_line(line); n = 0; }

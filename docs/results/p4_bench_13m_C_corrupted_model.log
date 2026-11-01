@@ -1,0 +1,130 @@
+ESP-ROM:esp32p4-eco7-20260109
+Build:Jan  9 2026
+rst:0x1 (POWERON),boot:0x30f (SPI_FAST_FLASH_BOOT)
+SPI mode:DIO, clock div:1
+load:0x4ffb60d0,len:0x173c
+load:0x4ffac2c0,len:0x104c
+load:0x4ffaefc0,len:0x3650
+entry 0x4ffac2c0
+I (25) boot: ESP-IDF 5.5.4 2nd stage bootloader
+I (26) boot: compile time Oct 31 2026 23:02:02
+I (26) boot: Multicore bootloader
+I (27) boot: chip revision: v3.2
+I (29) boot: efuse block revision: v1.2
+I (32) qio_mode: Enabling default flash chip QIO
+I (37) boot.esp32p4: SPI Speed      : 80MHz
+I (40) boot.esp32p4: SPI Mode       : QIO
+I (44) boot.esp32p4: SPI Flash Size : 32MB
+I (48) boot: Enabling RNG early entropy source...
+I (53) boot: Partition Table:
+I (55) boot: ## Label            Usage          Type ST Offset   Length
+I (61) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (68) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (74) boot:  2 factory          factory app      00 00 00010000 00200000
+I (81) boot:  3 model            Unknown data     01 40 00210000 01800000
+I (87) boot:  4 lm               Unknown data     01 42 01a10000 00400000
+I (94) boot:  5 audio            Unknown data     01 41 01e10000 00100000
+I (102) boot: End of partition table
+I (104) esp_image: segment 0: paddr=00010020 vaddr=40040020 size=0a8f8h ( 43256) map
+I (118) esp_image: segment 1: paddr=0001a920 vaddr=30100000 size=0014ch (   332) load
+I (120) esp_image: segment 2: paddr=0001aa74 vaddr=30100150 size=00050h (    80) load
+I (128) esp_image: segment 3: paddr=0001aacc vaddr=4ff40000 size=0554ch ( 21836) load
+I (138) esp_image: segment 4: paddr=00020020 vaddr=40000020 size=3b254h (242260) map
+I (174) esp_image: segment 5: paddr=0005b27c vaddr=4ff4554c size=0abfch ( 44028) load
+I (182) esp_image: segment 6: paddr=00065e80 vaddr=4ff50180 size=02b88h ( 11144) load
+I (188) boot: Loaded app from partition at offset 0x10000
+I (189) boot: Disabling RNG early entropy source...
+I (201) hex_psram: vendor id    : 0x0d (AP)
+I (201) hex_psram: Latency      : 0x01 (Fixed)
+I (201) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (202) hex_psram: dev id       : 0x03 (generation 4)
+I (207) hex_psram: density      : 0x07 (256 Mbit)
+I (211) hex_psram: good-die     : 0x06 (Pass)
+I (215) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (220) hex_psram: BurstType    : 0x00 ( Wrap)
+I (224) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (229) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (233) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (238) hex_psram: DriveStrength: 0x00 (1/1)
+I (242) MSPI Timing: Enter psram timing tuning
+I (400) esp_psram: Found 32MB PSRAM device
+I (400) esp_psram: Speed: 200MHz
+I (401) hex_psram: psram CS IO is dedicated
+I (401) cpu_start: Multicore app
+I (846) esp_psram: SPI SRAM memory test OK
+I (855) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (856) cpu_start: Pro cpu start user code
+I (856) cpu_start: cpu freq: 400000000 Hz
+I (857) app_init: Application information:
+I (861) app_init: Project name:     oido
+I (865) app_init: App version:      9d4bef1-dirty
+I (869) app_init: Compile time:     Oct 31 2026 22:57:22
+I (874) app_init: ELF file SHA256:  2dc83bd73...
+I (879) app_init: ESP-IDF:          5.5.4
+I (882) efuse_init: Min chip rev:     v3.1
+I (886) efuse_init: Max chip rev:     v3.99 
+I (890) efuse_init: Chip rev:         v3.2
+I (894) heap_init: Initializing. RAM available for dynamic allocation:
+I (900) heap_init: At 4FF59020 len 00061FA0 (391 KiB): RETENT_RAM
+I (906) heap_init: At 4FFBAFC0 len 00004BF0 (18 KiB): RAM
+I (911) heap_init: At 50108080 len 00007F80 (31 KiB): RTCRAM
+I (917) heap_init: At 301001A0 len 00001E60 (7 KiB): TCM
+I (922) esp_psram: Adding pool of 32768K of PSRAM memory to heap allocator
+I (929) spi_flash: detected chip: gd
+I (932) spi_flash: flash io: qio
+I (935) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (941) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (948) main_task: Started on CPU0
+I (973) main_task: Calling app_main()
+CALIB 4M nops: cycles 12039920, time 30099 us
+P4SELFTEST dot_rows_s8 PASS (-371 vs -371)
+P4SELFTEST dot48_rows PASS
+P4SELFTEST gemm_s8_xr PASS
+P4SELFTEST gemm_blk16 PASS (QACC layout 1)
+P4SELFTEST ok: vector kernels on
+DEBUG: forcing plain C kernels
+I (1015) tinyasr: model blob 13983264 bytes; free PSRAM 33551716, internal 414204
+I (1475) tinyasr: LM 196800 bytes in PSRAM, beam 4
+I (1930) tinyasr: NeMo conformer-ctc-small: 13894264 weight bytes, 12973488 moved to PSRAM | free PSRAM 18634008 internal 371140
+STREAM model: chunk/left defaults, stream ok
+REF: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+STREAM 0 | feed cycles 813583573 | finish cycles 1004887629 (2512 ms @240MHz) | RTF 0.650 | feed wall 34246214 us | finish wall 2512221 us | RTF_wall 5.255
+SHYP: the fors to the fors to the fors to the fors to the fors to the fors to the fors to the
+PACED 0 | audio 7.00s | last block fed 27384 ms after the end of speech | final text 29896 ms after the end of speech
+PHYP: the fors to the fors to the fors to the fors to the fors to the fors to the fors to the
+REF: it is such a noble ambition that it is a pity it has usually such a shallow foundation
+STREAM 1 | feed cycles 814616009 | finish cycles 1004814493 (2512 ms @240MHz) | RTF 0.650 | feed wall 34248795 us | finish wall 2512038 us | RTF_wall 5.255
+SHYP: the fors to the fors to the fors to the fors to the fors to the fors to the fors to the
+PACED 1 | audio 7.00s | last block fed 27388 ms after the end of speech | final text 29900 ms after the end of speech
+PHYP: the fors to the fors to the fors to the fors to the fors to the fors to the fors to the
+REF: no such authority was given for the court of appeal whose registries remained closed
+STREAM 2 | feed cycles 2723503957 | finish cycles 1818844523 (4547 ms @240MHz) | RTF 0.099 | feed wall 28283596 us | finish wall 4547113 us | RTF_wall 5.271
+SHYP: the fors to the fors to the fors to the fors to the fors to the fors to the
+PACED 2 | audio 6.23s | last block fed 22189 ms after the end of speech | final text 26737 ms after the end of speech
+PHYP: the fors to the fors to the fors to the fors to the fors to the fors to the
+REF: yeah i think of it in terms of you know not even maybe to well
+STREAM 3 | feed cycles 1710001199 | finish cycles 2002885025 (5007 ms @240MHz) | RTF 2.417 | feed wall 15012421 us | finish wall 5007214 us | RTF_wall 5.213
+SHYP: the fors to the fors to the fors to the fors
+PACED 3 | audio 3.84s | last block fed 11306 ms after the end of speech | final text 16313 ms after the end of speech
+PHYP: the fors to the fors to the fors to the fors
+STREAM mean finish 3645 ms @240MHz, 3645 ms wall
+TOTAL audio 24.1s cycles 50547844800 RTF@240MHz 5.253 wall RTF 5.253
+MEM min free PSRAM 15378948 internal 266968
+PROF features      407012922 cycles   0.8%
+PROF conv0         814314979 cycles   1.6%
+PROF im2col        332260939 cycles   0.7%
+PROF gemm_fe     33611068498 cycles  66.5%
+PROF gemm_k704   21480555284 cycles  42.5%
+PROF layernorm     381484105 cycles   0.8%
+PROF gemm        33903894845 cycles  67.1%
+PROF quant         469680621 cycles   0.9%
+PROF act                   0 cycles   0.0%
+PROF qkv_int8      455162967 cycles   0.9%
+PROF pos                   0 cycles   0.0%
+PROF attention    5246187918 cycles  10.4%
+PROF dwconv        611820987 cycles   1.2%
+PROF head+dec     4100944811 cycles   8.1%
+PROF (decoder)    3317250147 cycles   6.6%
+PROF (lm)        3158256374 cycles in 264 GRU steps, 280 rows
+DONE
+I (257172) main_task: Returned from app_main()

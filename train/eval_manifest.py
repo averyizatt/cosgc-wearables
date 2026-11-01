@@ -36,8 +36,17 @@ def main():
                     "severe or 0-1), to test models on simulated dysarthria")
     ap.add_argument("--bits", type=int, default=0, help="8: simulate the engine's int8 weights and activations "
                     "(fake quantization as in training with --bits 8); 0: floating point")
+    ap.add_argument("--fq", default="war", help="with --bits: which fake quantizers stay on (diagnosis of int8 loss): "
+                    "w = weights, a = linear-layer inputs, r = attention rows (q, k, positions, probabilities)")
     a = ap.parse_args()
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    import train_nemo_stream as tns
+    if "w" not in a.fq:
+        tns.fq_weight = lambda w, bits: w
+    if "a" not in a.fq:
+        tns.fq_act = lambda x: x
+    if "r" not in a.fq:
+        tns.fq_rows = lambda x, qmax=127: x
+    dev ="cuda" if torch.cuda.is_available() else "cpu"
     sd = torch.load(f"{a.nemo}/state_dict_plain.pt", map_location="cpu")
     m = NemoSmall(sd)
     src = {}
