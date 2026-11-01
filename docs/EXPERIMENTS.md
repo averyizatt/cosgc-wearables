@@ -640,6 +640,43 @@ transcript and every intermediate result with the host.
 folder underneath a running build (it broke one flash attempt); my build watcher read only stdout while failures go to stderr, which
 hid a failed build for two hours.
 
+**Microphone firmware (`oido_p4`), same night:** the codec answers with chip id `0x8311`, which confirms the I2C pins and
+address. The API works in both directions over UART0. In a quiet room the microphone reads -61.3 to -55.8 dBFS, median -57.9 (142 level
+events in 45 s), so the capture path delivers a live signal, not constant zeros. Right after boot the voice detector
+ran once for the 20 s maximum and produced "the", with nobody speaking; it did not recur in the next 45 s. **Not tested: recognition
+of a person speaking at the board.** Nobody was present.
+
+### E9b. Flash above 16 MB, and the 24-layer model on the chip (2026-11-01)
+
+**Correction to E9:** bug 3 has a better fix than "keep everything below 16 MB", and big2's speed is now measured.
+
+**Method:** the flash chip has an Extended Address Register (commands C8h read, C5h write) that selects the 16 MB bank for
+3-byte addresses. Test on the unused top of the flash: with the register at 1, the ROM loader wrote and verified a 4 KB pattern, and bank 0 was
+unchanged. `esp32/tools/flash_p4.py` splits images at the boundary, switches banks, verifies every image again after the last write
+and leaves bank 0 selected. The cache still cannot reach above 16 MB, so the app, LM and clips stay below it, and at boot the P4 firmware
+reads the model into PSRAM through the flash driver (`read_partition_to_psram` in `main.c`), which uses 4-byte commands. ESP-IDF's
+experimental `CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH` is not used. Model partition at `0x610000`, 24 MB.
+
+**Results,** one core, 400 MHz, same four clips (24.1 s), beam 4 + LM:
+
+| | shipped 13 M, model read from flash | shipped 13 M, whole model in PSRAM | big2, 19 M, whole model in PSRAM |
+|---|---|---|---|
+| wall RTF | 0.759 | **0.748** | **0.967** |
+| per clip | 0.754, 0.754, 0.759, 0.781 | 0.743, 0.743, 0.748, 0.767 | 0.964, 0.962, 0.969, 0.979 |
+| mean compute after the last block | 542 ms | | 755 ms |
+| final text after end of speech (paced runs) | at most 822 ms | | at most 1120 ms |
+| model read at boot | | 1279 ms | 1865 ms (about 11 MB/s) |
+| minimum free PSRAM | 15.4 MB | 14.4 MB | 6.5 MB |
+| transcripts against the host engine | identical | identical | identical |
+
+Logs: `docs/results/p4_bench_13m_psram.log`, `docs/results/p4_bench_big2.log`. big2's share of the run: `gemm` 64.2 %, decoder 20.9 %, attention
+15.0 %, depthwise convolution 9.9 %. The decoder cost is about the same as with the 13 M model (1.94 G cycles against 1.95 G), since it depends on the
+language model, not the depth.
+
+**Finding 20:** the 24-layer model, our best on TORGO (26.2 % against 37.4 %), streams in real time on one ESP32-P4 core: 0.967 times
+real time. The margin is only 3 %, this benchmark has no microphone capture running, and four clips are few. The second core is idle and is the obvious
+source of headroom. Compute grew by 29 % for 50 % more encoder layers, because the decoder and front end do not grow.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -662,8 +699,8 @@ hid a failed build for two hours.
 9. TORGO fine-tuning improves an unseen corpus too (UASpeech B2: 72.8 → 66.5 % streaming, dysarthric 100 → 91.5).
 10. Nearly all of the int8 loss of a float fine-tune comes from weight rounding, not activations (E8b).
 11. On real hardware, the shipped model streams at 0.759 times real time on one ESP32-P4 core at 400 MHz, about twice as fast
-    as the ESP32-S3, with transcripts identical to the host engine on four clips (E9). The speed of the 24-layer model on the
-    chip is not measured yet.
+    as the ESP32-S3, with transcripts identical to the host engine on four clips (E9). The 24-layer model, our most accurate,
+    also streams in real time on one core at 0.967, with little margin and the second core still idle (E9b).
 
 ## 6. Threats to validity and open issues
 

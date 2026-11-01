@@ -34,6 +34,9 @@ def image(src, part):
     out = os.path.join(env.subst("$BUILD_DIR"), part + ".bin")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     open(out, "wb").write(img)
+    if off + len(img) > 1 << 24:  # esptool's ROM loader would wrap around onto what is below 16 MB (docs/P4.md)
+        print("%s crosses 16 MB: pio upload skips it, flash it with esp32/tools/flash_p4.py" % part)
+        return
     env.Append(FLASH_EXTRA_IMAGES=[(hex(off), out)])
 
 

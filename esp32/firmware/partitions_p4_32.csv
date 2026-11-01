@@ -1,10 +1,9 @@
-# ESP32-P4-Pico. The chip has 32 MB of flash, but everything must stay below 16 MB for now: without 32-bit addressing, an
-# address above 16 MB wraps around (0x1A10000 reads and writes 0xA10000), both in the ROM loader and through the cache.
-# Exactly 16 MB: 512 KB app, 13.7 MB model (the 16-layer model is 13.3 MB; the 24-layer model does not fit), 1.3 MB LM,
-# 768 KB of benchmark clips. See docs/P4.md.
+# ESP32-P4 board, 32 MB flash. Above 16 MB the cache and esptool's ROM loader only reach the flash through 3-byte addresses,
+# which wrap around, so everything memory-mapped (app, LM, clips) stays below 16 MB. The model may cross it: the firmware reads
+# it into PSRAM at boot with the flash driver's 4-byte commands, and esp32/tools/flash_p4.py writes it. See docs/P4.md.
 nvs,      data, nvs,     0x9000,    0x6000
 phy_init, data, phy,     0xf000,    0x1000
-factory,  app,  factory, 0x10000,   0x80000
-model,    data, 0x40,    0x90000,   0xD60000
-lm,       data, 0x42,    0xDF0000,  0x150000
-audio,    data, 0x41,    0xF40000,  0xC0000
+factory,  app,  factory, 0x10000,   0x100000
+lm,       data, 0x42,    0x110000,  0x400000
+audio,    data, 0x41,    0x510000,  0x100000
+model,    data, 0x40,    0x610000,  0x1800000

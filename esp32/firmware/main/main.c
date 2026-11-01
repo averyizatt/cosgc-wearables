@@ -133,6 +133,29 @@ static const void *map_partition(uint8_t subtype, const char *name, size_t *size
     return ptr;
 }
 
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+// The P4's model may cross 16 MB, which the cache cannot reach here (docs/P4.md): read the image [u32 size][pad to 16][blob]
+// into PSRAM through the flash driver, which uses 4-byte commands. This also leaves all the weights in PSRAM from the start.
+static const void *read_partition_to_psram(uint8_t subtype, const char *name, size_t *size)
+{
+    const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, subtype, name);
+    uint32_t bytes = 0;
+    if (!p || esp_partition_read(p, 0, &bytes, 4) != ESP_OK || bytes == 0 || bytes + 16 > p->size) {
+        ESP_LOGE(TAG, "partition %s: no image (size word %u)", name, (unsigned)bytes);
+        return NULL;
+    }
+    void *buf = heap_caps_aligned_alloc(16, bytes + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { ESP_LOGE(TAG, "partition %s: no PSRAM for %u bytes", name, (unsigned)bytes); return NULL; }
+    const int64_t t0 = esp_timer_get_time();
+    const esp_err_t e = esp_partition_read(p, 0, buf, bytes + 16);
+    if (e != ESP_OK) { ESP_LOGE(TAG, "partition %s: read failed: %s", name, esp_err_to_name(e)); heap_caps_free(buf); return NULL; }
+    ESP_LOGI(TAG, "%s: %u bytes read from flash at 0x%x to PSRAM in %lld ms", name, (unsigned)bytes, (unsigned)p->address,
+             (esp_timer_get_time() - t0) / 1000);
+    *size = bytes + 16;
+    return buf;
+}
+#endif
+
 static void calibrate(void)
 {
     // 4M single-cycle NOPs (+ loop setup): on silicon cycles ~= 4.0M; under QEMU -icount this gives cycles/instruction
@@ -192,8 +215,8 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
     }
 #endif
     size_t budget = free_ps > keep ? free_ps - keep : 0;
-#ifdef CONFIG_TASR_EXP_NO_PSRAM_WEIGHTS
-    budget = 0;
+#if defined(CONFIG_TASR_EXP_NO_PSRAM_WEIGHTS) || defined(CONFIG_IDF_TARGET_ESP32P4)
+    budget = 0;  // on the P4 the whole model is already in PSRAM
 #endif
     size_t moved = tasr_nemo_place_weights(m, budget);
 #if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3)  // S3 cache registers
@@ -342,7 +365,11 @@ void app_main(void)
     ESP_LOGI(TAG, "dual-core enabled");
 #endif
     size_t msize = 0, asize = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    const uint8_t *mflash = read_partition_to_psram(0x40, "model", &msize);
+#else
     const uint8_t *mflash = map_partition(0x40, "model", &msize);
+#endif
     const uint8_t *aud = map_partition(0x41, "audio", &asize);
     if (!mflash) { ESP_LOGE(TAG, "model partition missing"); return; }
 #if defined(CONFIG_TASR_EXP_DCACHE_AUTOLOAD) && CONFIG_TASR_EXP_DCACHE_AUTOLOAD >= 0 && defined(CONFIG_IDF_TARGET_ESP32S3)
