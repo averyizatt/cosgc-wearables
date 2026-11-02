@@ -120,6 +120,28 @@ def insert_pauses(frames, seg_e, cuts, floor_frames, rng):
     return np.concatenate(idx).astype(int)
 
 
+def add_breaths(f0, sp, ap, cuts, amount, rng):
+    """An audible in-breath in some of the inserted pauses: broadband noise, 15-30 dB below the speech, rising and falling over 0.2-0.5 s."""
+    sp, ap = sp.copy(), ap.copy()
+    v = f0 > 0
+    ref = np.log(sp[v].mean(0) + 1e-16) if v.any() else np.log(sp.mean(0) + 1e-16)
+    shape = gaussian_filter1d(ref, 8)
+    shape = 0.5 * shape + 0.5 * shape.mean()  # flatter than speech
+    off = 0
+    for c in sorted(cuts):
+        start, k = c + off, cuts[c]
+        off += k
+        if k < 30 or rng.random() >= amount:
+            continue
+        m = int(rng.integers(20, min(100, k - 6) + 1))
+        a = start + (k - m) // 2
+        env = np.sin(np.linspace(0, np.pi, m)) ** 2
+        lvl = -rng.uniform(15, 30) * np.log(10) / 10  # dB below the mean voiced spectrum, in natural log of power
+        sp[a:a + m] = np.maximum(sp[a:a + m], np.exp(shape + lvl)[None] * env[:, None])
+        ap[a:a + m] = 1.0
+    return sp, ap
+
+
 def warp_envelope(sp, factor):
     """Move the formants: frequency axis scaled by factor (voiced frames only by the caller)."""
     n = sp.shape[1]
@@ -238,6 +260,8 @@ def profile(cond, s, rng):
         p["blur"] = min(p["blur"], 0.35)
         # round 3: sound errors, which no amount of weakening produced; consonant errors are the most frequent kind in dysarthric speech
         p.update(omit=U(rng, .05, .25, s), swap=U(rng, .1, .45, s), devoice=U(rng, .1, .4, s))
+        # E16 details: short breath groups with audible breaths, speech that wears down within the utterance, hard voice onsets
+        p.update(breath=U(rng, .3, .9, s), fatigue=U(rng, 0, 1, s), hard_onset=U(rng, .2, .7, s) if cond in ("spastic", "cp", "als", "hyperkinetic") else 0.0)
     elif cond == "apraxia":
         p.update(omit=U(rng, .03, .15, s), swap=U(rng, .1, .4, s), devoice=U(rng, .05, .25, s))
     p["slow"] = max(p["slow"], 0.4)  # severities above 1 (round 2: severe sims cost the model 21 %, real severe speakers about 45-50 %) must not stretch speech past 2.5 x
@@ -247,7 +271,7 @@ def profile(cond, s, rng):
 def _profile(cond, s, rng):
     g = lambda lo, hi: U(rng, lo, hi, s)
     p = dict(slow=1.0, uneven=0.0, vowel_long=1.0, rushes=0.0, pause=0.0, mono=0.0, f0_st=0.0, jitter=0.0, tremor=0.0, breaks=0.0, stops=0.0, weak=0.0, lenite=0.0, vowel=0.0, blur=0.0,
-             nasal=0.0, breathy=0.0, strain=0.0, rough=0.0, tilt=0.0, decay=0.0, am=0.0, rep=0.0, block=0.0, prolong=0.0, source="", omit=0.0, swap=0.0, devoice=0.0)
+             nasal=0.0, breathy=0.0, strain=0.0, rough=0.0, tilt=0.0, decay=0.0, am=0.0, rep=0.0, block=0.0, prolong=0.0, source="", omit=0.0, swap=0.0, devoice=0.0, breath=0.0, fatigue=0.0, hard_onset=0.0)
     slow = lambda lo, hi: 1 - s * rng.uniform(lo, hi)
     if cond == "flaccid":  # weak muscles: breathy, nasal, imprecise (bulbar palsy, myasthenia, part of ALS)
         p.update(slow=slow(.15, .4), breathy=g(.3, .9), nasal=g(.5, 1.), weak=g(8, 18), lenite=g(.4, 1.), vowel=g(.3, .6), mono=g(.2, .6), tilt=g(-10, -3), decay=g(1, 6))
@@ -381,6 +405,8 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
     if cuts:
         i = insert_pauses(None, seg.e, cuts, floor, rng)
         f0, sp, ap = f0[i], sp[i], ap[i]
+        if p["breath"] > 0:
+            sp, ap = add_breaths(f0, sp, ap, cuts, p["breath"], rng)
         seg = Seg(f0, sp)
     if p["rep"] or p["block"] or p["prolong"]:
         i = fluency(f0, sp, ap, seg, rng, p["rep"], p["block"], p["prolong"])
@@ -403,6 +429,16 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
         gain += 20 * p["am"] * slow_noise / (slow_noise.std() + 1e-6) / 2
     if gain.any():
         sp = sp * (10 ** (gain / 10))[:, None]
+    if p["fatigue"] > 0:  # wearing down: duller and breathier toward the end
+        tt = np.linspace(0, 1, n)[:, None]
+        sp = sp * 10 ** (-6 * p["fatigue"] * tt * np.linspace(0, 1, sp.shape[1])[None] / 10)
+        ap = np.where((f0 > 0)[:, None], np.minimum(1.0, ap + 0.3 * p["fatigue"] * tt), ap)
+    if p["hard_onset"] > 0:  # hard glottal attack where voicing starts after a gap
+        v = f0 > 0
+        for a in np.where(v[1:] & ~v[:-1])[0] + 1:
+            if a >= 10 and not v[a - 10:a].any() and rng.random() < p["hard_onset"]:
+                ap[a:a + 4] = np.maximum(ap[a:a + 4], 0.6)
+                sp[a:a + 4] = apply_tilt(sp[a:a + 4], 6.0) * 2.0
     y = synth(f0, sp, ap)
     y = y * (level / (np.sqrt((y ** 2).mean()) + 1e-9))  # same level as the source, whatever the traits did: level is the training pipeline's business
     return np.clip(y, -32768, 32767).astype(np.int16)

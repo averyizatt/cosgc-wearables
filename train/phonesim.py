@@ -192,6 +192,12 @@ def _render(ls, f0, ap, a, b, src, dst, ex, amount, rng, warp):
     elif dst in VOWELS or dst in GLIDE:  # vowel or glide toward the clip's average voiced envelope, smoothed (a weak, neutral sound)
         neutral = gaussian_filter1d(ls[a:b].mean(0), 3)
         ls[a:b] = (1 - k) * ls[a:b] + k * neutral[None]
+    # the error spills into the neighbouring frames: articulators do not switch sounds in an instant
+    for d, wt in ((1, 0.35), (2, 0.15)):
+        if a - d >= 0:
+            ls[a - d] = (1 - wt * amount) * ls[a - d] + wt * amount * ls[a]
+        if b - 1 + d < len(ls):
+            ls[b - 1 + d] = (1 - wt * amount) * ls[b - 1 + d] + wt * amount * ls[b - 1]
     # voicing follows the target
     if amount >= 0.5:
         if dst in VOICED and src not in VOICED:
