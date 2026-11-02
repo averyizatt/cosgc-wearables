@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nemo_small import NemoSmall
 from train_nemo_stream import BatchPre, SModel, ctc_greedy
 from simdys import SEVERITY, simulate
+from data import read_packed
 
 
 def main():
@@ -66,7 +67,10 @@ def main():
     rows = []
     with torch.no_grad():
         for n, it in enumerate(items):
-            w, _ = sf.read(it["wav"], dtype="float32")
+            if "pack" in it:  # packed sets (pack_audio.py, dysim.py): "wav" may name the clean source, not this audio
+                w = read_packed(it).astype("float32") / 32768.0
+            else:
+                w, _ = sf.read(it["wav"], dtype="float32")
             if w.ndim > 1:
                 w = w.mean(1)
             f, fl = pre(torch.from_numpy(w)[None].to(dev), torch.tensor([len(w)], device=dev))

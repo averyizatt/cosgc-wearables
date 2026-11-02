@@ -18,6 +18,8 @@ import argparse, hashlib, json, math, multiprocessing as mp, os, sys, time
 import numpy as np
 import pyworld as pw
 from scipy.ndimage import gaussian_filter1d, uniform_filter1d
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import phonesim
 
 SR = 16000
 FP = 5.0  # analysis frame period, ms
@@ -285,14 +287,22 @@ def _profile(cond, s, rng):
 CONDITIONS = ("flaccid", "spastic", "ataxic", "hypokinetic", "hyperkinetic", "uumn", "als", "cp", "stutter", "apraxia", "dysphonia", "electrolarynx", "esophageal", "whisper")
 
 
-def simulate(x, cond, s, sp_rng, rng):
-    """x int16 or float (at 16 kHz) -> int16. sp_rng draws the speaker's traits (same stream for a speaker's clips), rng this clip's events."""
+def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
+    """x int16 or float (at 16 kHz) -> int16. sp_rng draws the speaker's traits (same stream for a speaker's clips), rng this clip's events.
+    tg: the clip's alignment (phonesim.read_textgrid); with it, sounds are changed one by one (phonesim.py) in place of the frame-class guesses
+    of sound_errors. log: a list that receives the sound errors made."""
     x = np.asarray(x, dtype=np.float64)
     level = np.sqrt((x ** 2).mean()) + 1e-9
     if len(x) < SR // 5:
         return np.clip(x, -32768, 32767).astype(np.int16)
     p = profile(cond, s, sp_rng)
+    z = phonesim.profile(cond, s, sp_rng) if tg else None
     f0, sp, ap = analyze(x / 32768.0)
+    if tg:  # sound errors first, while the alignment still matches the frames
+        f0, sp, ap, errs = phonesim.apply(f0, sp, ap, phonesim.phone_frames(tg, len(f0), FPS), z, rng, warp_envelope)
+        if log is not None:
+            log.extend(errs)
+        p.update(omit=0.0, swap=0.0, devoice=0.0)
     seg = Seg(f0, sp)
 
     # --- articulation, on the original frames so the classes still line up
@@ -420,7 +430,11 @@ def _job(a):
     cond = conds[int(r0.integers(len(conds)))]
     s = float(r0.uniform(*sevs))
     try:
-        return it, cond, s, simulate(x, cond, s, np.random.default_rng(who + 1), np.random.default_rng(_seed(seed, it["off"])))
+        tg = phonesim.read_textgrid(it["tg"]) if it.get("tg") else None
+        errs = []
+        y = simulate(x, cond, s, np.random.default_rng(who + 1), np.random.default_rng(_seed(seed, it["off"])), tg, errs)
+        it["n_errors"] = len(errs) if tg else None
+        return it, cond, s, y
     except Exception as e:
         print("skip", it["off"], repr(e), flush=True)
         return it, cond, s, None
@@ -441,6 +455,11 @@ def gen(a):
                 break
             keep.append(it); tot += it.get("n", it.get("duration", 0) * SR) / SR
         items = keep
+    if a.align_dir:  # phone alignments, one TextGrid per utterance, found by utterance name wherever they sit under align_dir
+        tgs = {os.path.splitext(f)[0]: os.path.join(d, f) for d, _, fs in os.walk(a.align_dir) for f in fs if f.endswith(".TextGrid")}
+        for it in items:
+            it["tg"] = tgs.get(os.path.splitext(os.path.basename(it.get("wav", "")))[0], "")
+        print(sum(1 for it in items if it["tg"]), "of", len(items), "clips have an alignment", flush=True)
     conds = tuple(a.conditions.split(",")) if a.conditions else CONDITIONS
     sevs = tuple(float(v) for v in a.severity.split(","))
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
@@ -464,6 +483,8 @@ def gen(a):
             fp.write(y.astype("<i2").tobytes())
             r = {"wav": it.get("wav", ""), "text": it["text"], "duration": round(len(y) / SR, 2), "source": "sim", "speaker": f"{it.get('speaker', '')}:{cond}", "condition": cond,
                  "severity": round(s, 2), "pack": os.path.abspath(pack), "off": pos, "n": len(y)}
+            if it.get("n_errors") is not None:
+                r["sound_errors"] = it["n_errors"]
             fm.write(json.dumps(r) + "\n")
             pos += len(y)
             audio += len(y) / SR
@@ -479,18 +500,21 @@ def demo(a):
     assert sr == SR, "16 kHz input"
     os.makedirs(a.outdir, exist_ok=True)
     sf.write(os.path.join(a.outdir, "00_input.wav"), x, SR)
+    tg = phonesim.read_textgrid(a.tg) if a.tg else None
     for k, c in enumerate(CONDITIONS, 1):
         t0 = time.time()
-        y = simulate(x, c, a.severity, np.random.default_rng(_seed(c, 1)), np.random.default_rng(_seed(c, 2)))
+        errs = []
+        y = simulate(x, c, a.severity, np.random.default_rng(_seed(c, 1)), np.random.default_rng(_seed(c, 2)), tg, errs)
         sf.write(os.path.join(a.outdir, f"{k:02d}_{c}.wav"), y, SR)
-        print(c, round(len(y) / SR, 2), "s", round(time.time() - t0, 2), "s compute")
+        print(c, round(len(y) / SR, 2), "s", round(time.time() - t0, 2), "s compute", " ".join(f"{e[0][:3]}:{e[1]}>{e[2] or '-'}" for e in errs[:12]))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("demo"); d.add_argument("wav"); d.add_argument("outdir"); d.add_argument("--severity", type=float, default=0.7)
+    d = sub.add_parser("demo"); d.add_argument("wav"); d.add_argument("outdir"); d.add_argument("--severity", type=float, default=0.7); d.add_argument("--tg", default="", help="the clip's TextGrid")
     g = sub.add_parser("gen"); g.add_argument("--manifest", required=True); g.add_argument("--out", required=True); g.add_argument("--hours", type=float, default=0.0)
     g.add_argument("--workers", type=int, default=6); g.add_argument("--seed", type=int, default=1); g.add_argument("--conditions", default=""); g.add_argument("--severity", default="0.2,1.0")
+    g.add_argument("--align_dir", default="", help="phone alignments (TextGrid per utterance, e.g. zenodo.org/records/2619474): sound-level errors")
     a = ap.parse_args()
     demo(a) if a.cmd == "demo" else gen(a)

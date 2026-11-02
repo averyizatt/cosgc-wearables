@@ -1070,6 +1070,40 @@ On TORGO, our 19 M model beats both because it was fine-tuned on TORGO's prompts
 
 **Finding 34:** sound errors move simulated speech toward real dysarthria on both the statistics and the model's errors, but severe simulated speech still costs about half what real severe speech costs. The pilot set (sim100) was generated with round 2, before these errors existed.
 
+### E16. The simulator as the main route: sound-level errors from phone alignments (2026-11-02, built, not yet measured)
+
+**Why.** Finding 35: the large model's advantage comes from hundreds of hours of real dysarthric speech, which we cannot get. Finding 34: our simulation is half as hard as real severe speech, and what it lacks is wrong sounds. Without knowing where each sound is, the simulator can only weaken frames. With a phone alignment it can say one sound in place of another.
+
+**Phone alignments.** Lugosch et al. (2019) published Montreal Forced Aligner alignments (words and ARPAbet phones) of all of LibriSpeech, about 623 MB, at zenodo.org/records/2619474. `dysim.py gen --align_dir` finds each clip's TextGrid by utterance name.
+
+**`train/phonesim.py`** applies the errors on the WORLD frames before every other trait, while the alignment still matches. Its rates are per sound at severity 1, set by hand from the clinical literature, and are to be calibrated.
+
+| Error | Examples |
+|---|---|
+| Substitution | voicing (b → p), place (s → sh, k → t), stops to fricatives (t → s), fricatives to stops (s → t), gliding (r → w), nasal (b → m) |
+| Distortion | part of the way toward a substitute (the most frequent kind) |
+| Deletion | any consonant; word-final consonants and one consonant of a cluster most often |
+| Insertion | schwa inside a cluster |
+| Vowels | reduction toward schwa, diphthongs flattened (ay → aa), tense to lax (iy → ih) |
+
+- **How the new sound is made:** from the speaker's own version of it in the same clip when there is one, otherwise by a rule. Rules: move the noise peak for a place change; draw out the burst for a stop that becomes a fricative; close and add a burst for a fricative that becomes a stop; a nasal murmur; a neutral envelope for vowels. Voicing follows the target sound.
+- **Conditions:** each condition weights the error kinds. Flaccid: stops leak to fricatives and nasals. Spastic: voicing errors. Ataxic: mostly vowels. Hypokinetic: stops to fricatives, final sounds lost. Apraxia: inconsistent substitutions and inserted vowels.
+- **Transcript:** stays the intended words.
+- **Testing so far:** only a code-path test on one bench clip with a hand-spread alignment. Every condition runs. Severity 1 gives about 12 errors in 50 sounds, and severity 0.6 fewer and milder ones.
+
+**Calibration without leakage** (`train/calibrate_sim.py`):
+- The model is the starting model of every run (base24x), which has heard no dysarthric speech.
+- It scores TORGO's dysarthric training speakers (never the test speakers F03 and M05) and a simulated set made from LibriSpeech test-clean.
+- The tool reports the severity at which the simulation is as hard as each real speaker, and suggests a training range that spans them.
+
+`eval_manifest.py` now reads packed audio. A simulated manifest's "wav" names the clean source clip, so before this change it would have scored the clean audio. Earlier simulated scores went through the C engine on extracted audio and are not affected.
+
+**Plan:**
+1. Calibrate on test-clean with real alignments.
+2. Generate from all 960 h of LibriSpeech (100 + 360 + other-500), about 1600 h of output.
+3. Train longer than 6000 steps, so the set is seen at least once.
+4. Judge only on held-out real speakers (TORGO test, UASpeech).
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
