@@ -1198,7 +1198,14 @@ Off-list utterances: 5.0 % replaced by a phrase at every list size (by construct
 
 **Cost:** for each frame, about 2 operations per phrase token. A 100-phrase list of about 5 tokens each is about 1000 operations per 40 ms frame, negligible next to the encoder.
 
-**Finding 37:** a short phrase list turns the device from unreliable to usable for dysarthric speakers. With 25 phrases, 84 % of utterances come out fully right, against 50 % for free decoding, at a cost of 5 % of off-list speech being wrongly matched. The gain shrinks as the list grows (58 % at about 400 phrases), so the feature suits a core vocabulary rather than open dictation. Not yet in the firmware's interface.
+**Finding 37:** a short phrase list turns the device from unreliable to usable for dysarthric speakers. With 25 phrases, 84 % of utterances come out fully right, against 50 % for free decoding, at a cost of 5 % of off-list speech being wrongly matched. The gain shrinks as the list grows (58 % at about 400 phrases), so the feature suits a core vocabulary rather than open dictation.
+
+**On the device** (same day):
+- The `phrases` command loads a list, which is kept in NVS (16 KB).
+- `esp32/tools/send_phrases.py` tokenizes a plain list and sends it in batches. `esp32/tools/phrases_example.txt` holds 25 everyday phrases.
+- Before each full pass the firmware rebuilds the engine's copy if the list changed. Afterwards it shows the best phrase as "> phrase" when it clears the threshold for the list's size (E18's table, interpolated in log size).
+- The final event reports `"confidence":"phrase"`, and the console keeps the free text.
+- Checked on the board: 25 phrases loaded, still there after a reboot. Not yet checked with speech.
 
 ## 5. Findings so far, for the paper
 

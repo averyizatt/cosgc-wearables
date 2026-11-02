@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 #include "tinyasr.h"
 #include "tasr_nemo.h"
+#include "tasr_phrase.h"
 #include "tasr_seg.h"
 #include "api.h"
 #include "codec.h"
@@ -44,8 +45,52 @@ __attribute__((unused)) static const char *conf_line(char *buf, size_t n, const 
     if (!text[0]) return "(nothing recognized)";
     if (level == 1) snprintf(buf, n, "%s ?", text);
     else if (level == 0) snprintf(buf, n, "?? %s", text);
+    else if (level == 3) snprintf(buf, n, "> %s", text);
     else return text;
     return buf;
+}
+
+// Phrase mode (docs/EXPERIMENTS.md, E18): a list loaded with the "phrases" command is scored in every full-context pass. The best
+// phrase replaces the free text when its log-likelihood per frame is within a threshold of the free decoding path's. The thresholds
+// let 5 % of off-list utterances through on TORGO test at each list size; between sizes, interpolated in log size.
+static const int PHR_N[] = {10, 25, 50, 100, 398};
+static const float PHR_T[] = {-0.163f, -0.119f, -0.089f, -0.067f, -0.018f};
+__attribute__((unused)) static float phrase_threshold(int n)
+{
+    if (n <= PHR_N[0]) return PHR_T[0];
+    for (int i = 1; i < 5; i++)
+        if (n <= PHR_N[i]) {
+            const float w = (logf((float)n) - logf((float)PHR_N[i - 1])) / (logf((float)PHR_N[i]) - logf((float)PHR_N[i - 1]));
+            return PHR_T[i - 1] + w * (PHR_T[i] - PHR_T[i - 1]);
+        }
+    return PHR_T[4];
+}
+static tasr_phrases_t *s_phr;
+static unsigned s_phr_seen = ~0u;
+// rebuild the engine's copy when a client changed the list (before a full pass, never during one)
+__attribute__((unused)) static void phrases_sync(void)
+{
+    const unsigned v = api_phrases_version();
+    if (v == s_phr_seen) return;
+    s_phr_seen = v;
+    tasr_nemo_set_phrases(NULL);
+    tasr_phrases_free(s_phr);
+    s_phr = NULL;
+    static char *buf;
+    if (!buf) buf = heap_caps_malloc(16385, MALLOC_CAP_SPIRAM);
+    const int n = buf ? api_phrases_copy(buf, 16385) : 0;
+    if (n) s_phr = tasr_phrases_parse(buf, n, 1024);
+    tasr_nemo_set_phrases(s_phr);
+    if (s_phr) printf("phrase mode: %d phrases\n", tasr_phrases_count(s_phr));
+}
+// after a full pass: the list phrase to show instead of the free text, or NULL
+__attribute__((unused)) static const char *phrase_pick(void)
+{
+    if (!s_phr || tasr_phrases_frames(s_phr) <= 0) return NULL;
+    float best, second;
+    const int k = tasr_phrases_best(s_phr, &best, &second);
+    const float gap = (best - tasr_phrases_free_score(s_phr)) / tasr_phrases_frames(s_phr);
+    return k >= 0 && gap > phrase_threshold(tasr_phrases_count(s_phr)) ? tasr_phrases_text(s_phr, k) : NULL;
 }
 #ifdef CONFIG_TASR_BLE
 #define HAS_BLE true
@@ -239,14 +284,21 @@ static void ptt_end(ptt_t *p, int64_t released_us)
         }
         int kept = 0;  // the stream already ran the front end over this audio: about a quarter of the pass's work
         const float *kx = p->st ? tasr_nemo_stream_kept(p->st, &kept) : NULL;
+        phrases_sync();
         tasr_nemo_transcribe_from(p->m, p->utt, n, p->dec, p->text, p->text_len, NULL, 0, NULL, kx, kx ? kept : 0);
     }
     const int64_t t1 = esp_timer_get_time();
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
+    float cs = full ? conf_score() : 0.f;
+    int cl = full && p->text[0] ? conf_level(cs) : -1;
+    const char *ph = full ? phrase_pick() : NULL;
+    if (ph) {  // a phrase from the user's list wins over the free text (the free text stays in the console log)
+        printf("\r(free text: %s)\n", p->text);
+        snprintf(p->text, p->text_len, "%s", ph);
+        cl = 3;
+    }
     printf("\r%s   [%.1f s audio, final text %.0f ms after %s]\n", p->text, p->n_utt / 16000.0, after,
            released_us ? "the button was released" : "the 20 s recording limit (still holding: next part follows)");
-    const float cs = full ? conf_score() : 0.f;
-    const int cl = full && p->text[0] ? conf_level(cs) : -1;
     static char line[600];
     oled_push(conf_line(line, sizeof(line), p->text, cl));
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);

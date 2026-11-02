@@ -1,5 +1,5 @@
 set(extra_req "")
 if(CONFIG_TASR_BLE)
-    set(extra_req bt nvs_flash)
+    set(extra_req bt)
 endif()
-idf_component_register(SRCS "main.c" "mic.c" "oled.c" "oled_render.c" "kbench.c" "led.c" "api.c" "ble.c" "codec.c" INCLUDE_DIRS "." REQUIRES tinyasr esp_partition spi_flash esp_timer esp_psram esp_driver_i2s esp_driver_i2c esp_driver_gpio esp_driver_rmt esp_driver_uart json hal ${extra_req})
+idf_component_register(SRCS "main.c" "mic.c" "oled.c" "oled_render.c" "kbench.c" "led.c" "api.c" "ble.c" "codec.c" INCLUDE_DIRS "." REQUIRES tinyasr esp_partition spi_flash esp_timer esp_psram esp_driver_i2s esp_driver_i2c esp_driver_gpio esp_driver_rmt esp_driver_uart json hal nvs_flash ${extra_req})

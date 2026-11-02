@@ -21,7 +21,8 @@ python esp32/tools/oido_client.py COM17 --talk 5       # hold the virtual button
 | `hello` | `api`, `fw` (firmware version), `mode` (`streaming` or `utterance`), `lm` (language model on), `ptt` (button mode), `ble` (Bluetooth built in), `cores`, `uptime_s`, `psram_free`, `internal_free` | at boot, and on the `hello` command |
 | `state` | `state` (`idle`, `listening`, `processing`), `utt` | the recognizer starts hearing an utterance (`utt` counts up), starts computing the final text, or is done |
 | `partial` | `utt`, `text` | the text so far of the current utterance (streaming models), sent when it changes; never empty |
-| `final` | `utt`, `text`, `audio_s`, `delay_ms` | the final text (empty if nothing was recognized). `delay_ms` is the time from the button release (or the end-of-speech pause) to this message |
+| `final` | `utt`, `text`, `audio_s`, `delay_ms`, optional `confidence`, `conf` | the final text (empty if nothing was recognized). `delay_ms` is the time from the button release (or the end-of-speech pause) to this message. After a full-context pass, `confidence` is `sure`, `unsure` or `low` (calibrated on TORGO test: about 95 %, 65 % and 27 % of such texts fully right; docs/EXPERIMENTS.md E17), or `phrase` when the text is a phrase from the loaded list (E18); `conf` is the engine's score behind it |
+| `phrases` | `count`, `bytes`, `max_bytes` | answer to the `phrases` command: the list the device holds |
 | `button` | `down` | the push-to-talk button changed (the physical one or the virtual one), in real time |
 | `level` | `db` | microphone level in dBFS, at most 5 a second, only after `{"cmd":"set","level":true}` |
 | `audio` | `utt`, `off`, `total` (samples), `b64` (16 kHz mono 16-bit little-endian, base64) | the microphone audio of the utterance before gain control, in several lines after its `final`, only after `{"cmd":"set","dump":true}`. For measuring; off by default and never stored on the device |
@@ -47,6 +48,8 @@ Every command may carry a number `"id"`, which comes back in its `ack`.
 | `{"cmd":"set","level":true}` | start (or stop, with `false`) the `level` events |
 | `{"cmd":"set","dump":true}` | start (or stop, with `false`) the `audio` events (button firmware) |
 | `{"cmd":"set","baud":921600}` | serial speed after the `ack`, 115200 or 921600 (ESP32-P4 only; back to 115200 at reset) |
+| `{"cmd":"phrases","add":["i need water\t...",...]}` | phrase mode: append phrases, each "text, a tab, its token ids" (`esp32/tools/send_phrases.py` tokenizes and sends a plain list in batches; lines are at most 512 bytes). The list is kept in flash across reboots, up to 16 KB (about 150 phrases; short lists work best). When a phrase clearly fits the speech better than free decoding, the `final` text is that phrase, with `"confidence":"phrase"` |
+| `{"cmd":"phrases","clear":true}` / `{"cmd":"phrases"}` | empty the list (phrase mode off) / report it; both answer with a `phrases` event |
 | `{"cmd":"reboot"}` | restart the firmware |
 | `{"cmd":"ble_unpair"}` | forget every bonded phone and drop the connection (Bluetooth firmware) |
 

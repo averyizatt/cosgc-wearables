@@ -19,8 +19,8 @@ void api_start(const api_info_t *info);  // starts the command reader; announces
 // events (any task)
 void api_state(const char *state);                   // "idle" | "listening" | "processing"; "listening" starts a new utterance
 void api_partial(const char *text);                  // text so far of the current utterance (streaming models)
-// final text; delay: from the button release (or the pause); conf_level: 2 sure, 1 unsure, 0 probably wrong, -1 not measured
-// (streaming-only text); conf: the engine's score behind the level (mic.c conf_score)
+// final text; delay: from the button release (or the pause); conf_level: 3 a phrase from the user's list (phrase mode), 2 sure,
+// 1 unsure, 0 probably wrong, -1 not measured (streaming-only text); conf: the engine's score behind the level (mic.c)
 void api_final(const char *text, double audio_s, double delay_ms, int conf_level, float conf);
 void api_button(bool down);                          // the physical button changed (real time, before the recognizer gets there)
 void api_warn(const char *code, int value);          // e.g. "audio_dropped" (value: ms of audio lost)
@@ -33,6 +33,11 @@ bool api_talk_held(void);
 // the microphone audio of each utterance, before gain control, for measuring (only after {"cmd":"set","dump":true})
 bool api_dump_on(void);
 void api_audio(const int16_t *pcm, int n);
+
+// Phrase mode: the list a client loaded with the "phrases" command (docs/API.md), as "text<TAB>token ids" lines, kept in NVS
+// across reboots. The version changes whenever the list does, so the recognizer rebuilds its copy only then.
+unsigned api_phrases_version(void);
+int api_phrases_copy(char *dst, int cap);  // bytes copied into dst (0: no list); dst gets a terminating 0
 
 // one line of text from a client (a transport calls this with each complete line)
 void api_handle_line(const char *line);

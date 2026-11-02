@@ -16,6 +16,8 @@
 #include "driver/uart.h"
 #endif
 #include "cJSON.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "oled.h"  // TASR_AUX_CORE
 #include "sdkconfig.h"
 
@@ -46,6 +48,59 @@ static unsigned stack_min(const char *name)
 }
 
 void api_set_ext_handler(api_ext_t fn) { s_ext = fn; }
+
+// ---- phrase list (phrase mode): "text\tids\n" lines in PSRAM, saved to NVS after every change
+#define PHR_MAX 16384  // about 150 phrases; NVS holds 24 KB
+static char *s_phr;
+static int s_phr_n;
+static volatile unsigned s_phr_ver;
+static SemaphoreHandle_t s_phr_mux;
+
+static void phr_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("tasr", NVS_READWRITE, &h) != ESP_OK) return;
+    if (s_phr_n) nvs_set_blob(h, "phrases", s_phr, s_phr_n);
+    else nvs_erase_key(h, "phrases");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void phr_load(void)
+{
+    esp_err_t e = nvs_flash_init();
+    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    nvs_handle_t h;
+    size_t n = PHR_MAX;
+    if (nvs_open("tasr", NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_blob(h, "phrases", s_phr, &n) == ESP_OK) s_phr_n = (int)n;
+        nvs_close(h);
+    }
+    s_phr_ver++;
+}
+
+static int phr_count(void)
+{
+    int k = 0;
+    for (int i = 0; i < s_phr_n; i++) k += s_phr[i] == '\n';
+    return k;
+}
+
+unsigned api_phrases_version(void) { return s_phr_ver; }
+
+int api_phrases_copy(char *dst, int cap)
+{
+    if (!s_phr_mux || cap < 1) return 0;
+    xSemaphoreTake(s_phr_mux, portMAX_DELAY);
+    const int n = s_phr_n < cap - 1 ? s_phr_n : cap - 1;
+    memcpy(dst, s_phr, n);
+    dst[n] = 0;
+    xSemaphoreGive(s_phr_mux);
+    return n;
+}
 
 void api_add_sink(api_sink_t sink)
 {
@@ -127,12 +182,12 @@ void api_partial(const char *text)
 
 void api_final(const char *text, double audio_s, double delay_ms, int conf_level, float conf)
 {
-    static const char *const names[] = {"low", "unsure", "sure"};
+    static const char *const names[] = {"low", "unsure", "sure", "phrase"};
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
     s_last_delay_ms = delay_ms;
     char head[64], tail[160];
     snprintf(head, sizeof(head), "{\"type\":\"final\",\"utt\":%d,\"text\":", s_utt);
-    if (conf_level >= 0 && conf_level <= 2)
+    if (conf_level >= 0 && conf_level <= 3)
         snprintf(tail, sizeof(tail), ",\"audio_s\":%.1f,\"delay_ms\":%.0f,\"confidence\":\"%s\",\"conf\":%.3f}", audio_s, delay_ms, names[conf_level], conf);
     else
         snprintf(tail, sizeof(tail), ",\"audio_s\":%.1f,\"delay_ms\":%.0f}", audio_s, delay_ms);
@@ -297,6 +352,34 @@ void api_handle_line(const char *text)
         send_line(line, n);
         xSemaphoreGive(s_fmt_mux);
         reply(id, cmd, true, NULL);
+    } else if (!strcmp(cmd, "phrases")) {  // {"cmd":"phrases","add":["text\tids",...]} | {"cmd":"phrases","clear":true} | {"cmd":"phrases"}
+        const cJSON *add = cJSON_GetObjectItemCaseSensitive(j, "add");
+        const cJSON *clr = cJSON_GetObjectItemCaseSensitive(j, "clear");
+        const char *err = NULL;
+        xSemaphoreTake(s_phr_mux, portMAX_DELAY);
+        if (cJSON_IsTrue(clr)) s_phr_n = 0;
+        if (cJSON_IsArray(add)) {
+            const cJSON *e;
+            cJSON_ArrayForEach(e, add) {
+                const char *s = cJSON_IsString(e) ? e->valuestring : NULL;
+                const int l = s ? (int)strlen(s) : 0;
+                if (!s || !strchr(s, '\t')) { err = "each phrase is \"text\\tids\" (esp32/tools/send_phrases.py)"; break; }
+                if (s_phr_n + l + 1 > PHR_MAX) { err = "list full"; break; }
+                memcpy(s_phr + s_phr_n, s, l);
+                s_phr_n += l;
+                s_phr[s_phr_n++] = '\n';
+            }
+        }
+        const bool changed = cJSON_IsTrue(clr) || cJSON_IsArray(add);
+        if (changed) { phr_save(); s_phr_ver++; }
+        const int count = phr_count(), bytes = s_phr_n;
+        xSemaphoreGive(s_phr_mux);
+        char line[96];
+        const int n = snprintf(line, sizeof(line), "{\"type\":\"phrases\",\"count\":%d,\"bytes\":%d,\"max_bytes\":%d}", count, bytes, PHR_MAX);
+        xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
+        send_line(line, n);
+        xSemaphoreGive(s_fmt_mux);
+        reply(id, cmd, err == NULL, err);
     } else if (!strcmp(cmd, "reboot")) {
         reply(id, cmd, true, NULL);
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -353,6 +436,9 @@ void api_start(const api_info_t *info)
     s_line = heap_caps_malloc(LINE_MAX_BYTES, MALLOC_CAP_SPIRAM);
     s_esc = heap_caps_malloc(LINE_MAX_BYTES / 2, MALLOC_CAP_SPIRAM);
     s_prev = heap_caps_calloc(LINE_MAX_BYTES / 2, 1, MALLOC_CAP_SPIRAM);
+    s_phr = heap_caps_malloc(PHR_MAX, MALLOC_CAP_SPIRAM);
+    s_phr_mux = xSemaphoreCreateMutex();
+    phr_load();
     xTaskCreatePinnedToCore(rx_task, "api_rx", 4096, NULL, 3, NULL, TASR_AUX_CORE);  // not on the spinning worker's core
     send_hello();
 }
