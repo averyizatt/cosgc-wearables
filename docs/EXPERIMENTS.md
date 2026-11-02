@@ -1151,6 +1151,9 @@ Control speakers' clips are 68 % sure and 12 % probably wrong; dysarthric speake
 
 ## 5. Findings so far, for the paper
 
+The list below covers E1–E14. Findings 17–36 are numbered in their entries. The consolidated claims the paper will make, each with its
+evidence and status, are in [PAPER.md](PAPER.md) (section 5); keep that table current rather than extending this list.
+
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
    speaker, versus 6 % on LibriSpeech.
 2. About 10 hours of TORGO lowers WER for unseen dysarthric speakers, by 8 to 15 points in streaming mode.
