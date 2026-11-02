@@ -110,6 +110,13 @@ def profile(cond, s, rng):
         z.update(voicing=2.5, gliding=2.0, spirant=1.5)
     elif cond == "apraxia":  # inconsistent substitutions, groping, inserted vowels
         z.update(subst=z["subst"] * 1.5, epen=z["epen"] * 2 + u(.03, .08), voicing=2.0, place=2.0)
+    # A dysarthric speaker makes the same errors again and again: each sound gets this speaker's own susceptibility (a few sounds are
+    # their trouble sounds, most are fine) and one habitual substitute. Apraxia is the exception: its errors vary from one attempt to the next.
+    z["consistency"] = 0.25 if cond == "apraxia" else rng.uniform(0.7, 0.9)
+    z["weight"] = {ph: float(rng.lognormal(0.0, 1.0)) for ph in sorted(CONS | VOWELS)}
+    m = np.mean(list(z["weight"].values()))
+    z["weight"] = {ph: w / m for ph, w in z["weight"].items()}  # mean 1: the overall rate stays the profile's
+    z["habit"] = {ph: pick_substitute(ph, z, rng) for ph in sorted(CONS | VOWELS)}
     return z
 
 
@@ -206,13 +213,18 @@ def apply(f0, sp, ap, phones, z, rng, warp):
     keep = np.ones(len(f0), bool)
     insert = {}  # frame -> number of schwa frames to insert before it
     log = []
+    def pick(ph):  # this speaker's habitual error for ph, or now and then another one
+        hab = z.get("habit", {}).get(ph)
+        return hab if hab and rng.random() < z.get("consistency", 0.0) else pick_substitute(ph, z, rng)
+
     for k, (a, b, ph, w, first, last) in enumerate(phones):
+        sw = min(4.0, z.get("weight", {}).get(ph, 1.0))  # trouble sounds go wrong far more often than the rest
         nxt = phones[k + 1] if k + 1 < len(phones) else None
         prv = phones[k - 1] if k > 0 else None
         in_cluster = ph in CONS and ((nxt and nxt[2] in CONS and nxt[3] == w) or (prv and prv[2] in CONS and prv[3] == w))
         if ph in CONS:
             p_del = z["delete"] + (z["final"] if last and not first else 0) + (z["cluster"] * 0.5 if in_cluster else 0)
-            if rng.random() < p_del:
+            if rng.random() < p_del * sw:
                 keep[a:b] = False
                 log.append(("delete", ph, ""))
                 continue
@@ -221,18 +233,18 @@ def apply(f0, sp, ap, phones, z, rng, warp):
                 log.append(("insert", ph, "AH"))
         r = rng.random()
         if ph in VOWELS:
-            if ph in DIPH and rng.random() < z["diph"]:
+            if ph in DIPH and rng.random() < z["diph"] * sw:
                 _render(ls, f0, ap, a + (b - a) // 3, b, ph, DIPH[ph], ex, 1.0, rng, warp)  # the glide is left out
                 log.append(("reduce", ph, DIPH[ph]))
-            elif ph != "AH" and rng.random() < z["vowel"]:
+            elif ph != "AH" and rng.random() < z["vowel"] * sw:
                 _render(ls, f0, ap, a, b, ph, "AH", ex, rng.uniform(0.4, 0.9), rng, warp)
                 log.append(("centralize", ph, "AH"))
             continue
-        if r < z["subst"] + z["distort"]:
-            dst = pick_substitute(ph, z, rng)
+        if r < (z["subst"] + z["distort"]) * sw:
+            dst = pick(ph)
             if dst is None:
                 continue
-            full = r < z["subst"]
+            full = r < z["subst"] * sw
             _render(ls, f0, ap, a, b, ph, dst, ex, 1.0 if full else rng.uniform(0.3, 0.7), rng, warp)
             log.append(("substitute" if full else "distort", ph, dst))
     sp = np.exp(ls)
