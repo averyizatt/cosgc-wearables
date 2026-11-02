@@ -1098,6 +1098,17 @@ On TORGO, our 19 M model beats both because it was fine-tuned on TORGO's prompts
 
 `eval_manifest.py` now reads packed audio. A simulated manifest's "wav" names the clean source clip, so before this change it would have scored the clean audio. Earlier simulated scores went through the C engine on extracted audio and are not affected.
 
+**Realism work** (all built 2026-11-02; none yet run on real data):
+1. *Consistent speakers.* Each simulated speaker gets trouble sounds (lognormal weights per sound) and a habitual substitute for each sound. They are used 70–90 % of the time, 25 % for apraxia, whose errors vary between attempts. Test: one simulated spastic speaker in three clips of the same text repeated r → w, s → z, k → hh and others.
+2. *Measured error rates* (`train/real_errors.py`). A phoneme recognizer (wav2vec2-xlsr-53-espeak-cv-ft) is aligned against CMUdict pronunciations for TORGO's training speakers. Control speakers give the recognizer's floor, and each dysarthric speaker's errors above it become a table.
+   - With `--real_errors`, phonesim draws substitutions and deletions from one measured speaker's table, scaled by severity. Distortion, which a recognizer cannot count, stays hand-set.
+   - TORGO only: UASpeech's test block is spoken by its training speakers, so fitting on UASpeech would leak.
+3. *Voice conversion* (`train/knnvc_gen.py`, kNN-VC). to_dys: LibriSpeech sentences in a real dysarthric training speaker's voice. from_dys: real dysarthric training recordings re-voiced by hundreds of LibriSpeech speakers, which keeps the real timing and articulation errors.
+4. *Realism meter* (`train/realism.py`, WavLM features). Two measures:
+   - A probe trained on control vs dysarthric within TORGO's training speakers (same channel and prompts) rates how dysarthric each simulated set sounds, against its clean source.
+   - A discriminator compares real dysarthric speech with simulation made from TORGO's own control speakers (same channel and prompts): 0.5 AUC means indistinguishable.
+5. *Details* in dysim: audible breaths in inserted pauses, fatigue (duller and breathier toward the end), hard voice onsets (spastic, CP, ALS, hyperkinetic), and sound errors that spill into the neighbouring frames.
+
 **Plan:**
 1. Calibrate on test-clean with real alignments.
 2. Generate from all 960 h of LibriSpeech (100 + 360 + other-500), about 1600 h of output.
