@@ -821,6 +821,89 @@ The reference for real_20 is "no such authority was given for the court of appea
 
 **Finding 24:** because of dynamic int8 quantization, the engine amplifies a difference of one part in a million in the input to about 1 % in the logits, enough to flip a marginal word. Bit-exact kernels do not imply identical transcripts across platforms unless `logf` matches too.
 
+### E13. Where the errors are, and how much dysarthric speech training sees (2026-11-01)
+
+**big4** (`train/runs/big4.cmd`): big2's data and steps with `--chunks 32,64 --lefts 64,128 --p_full 0.5 --val_chunk 64`, more training at full context because the final text now comes from it. Took 6177 s. Small gain at full context, small loss at chunk 32 (table below).
+
+**Language model grid** (big2_q121, full context, beam 4, TORGO test every 5th clip, 1043 clips; `eval_cli.py --lm_weight w --token_bonus b`, weights 0.15, 0.3, 0.45, 0.6, 0.8, bonuses 0, 0.5, 1, 1.5). WER across all clips:
+
+| weight \ bonus | 0 | 0.5 | 1 | 1.5 |
+|---|---|---|---|---|
+| 0.15 | 19.33 | 19.14 | 19.14 | 19.4 |
+| 0.3 | 19.92 | **19.22 (in use)** | 19.07 | 19.03 |
+| 0.45 | 21.14 | 20.58 | 19.84 | 19.59 |
+| 0.6 | 23.24 | 21.77 | 21.47 | 20.62 |
+| 0.8 | 26.61 | 25.17 | 23.8 | 22.76 |
+
+We chose by tuning on two speakers and checking on the other two, not on the test score. Tuning on F03 + FC03 picked 0.3 / 1, which helped the others (33.58 against 34.05, mean of speakers); tuning on M05 + MC04 picked 0.15 / 1, which hurt the others (19.69 against 19.43). Tuning on F03 + MC04 and on M05 + FC03 split the same way. The optimum depends on the speakers, so the setting stays at 0.3 / 0.5. At most about 0.2 points are left here, and more weight hurts, single words most (43.69 at 0.8 / 0).
+
+**Beam width** (same model and clips, `--beam`):
+
+| beam | all | control | dysarthric | sentence | word |
+|---|---|---|---|---|---|
+| 2 | 19.62 | 9.3 | 39.63 | 16.21 | 28.22 |
+| 4 (in use) | 19.22 | 9.02 | 38.98 | 15.64 | 28.22 |
+| 8 | 19.07 | 8.96 | 38.65 | 15.44 | 28.22 |
+| 16 | 18.99 | 8.96 | 38.44 | 15.33 | 28.22 |
+
+Beam 32 is not a result: `MAXB 16` in `tinyasr_lm.c` caps it silently, and its per-clip output is identical to beam 16. Cost on the chip has not been measured.
+
+**Where the errors are** (big4_q121, full context + LM, full test set; `sub / del / ins` as a percentage of reference words):
+
+| group | kind | WER | sub / del / ins | clips with no text | clips fully right |
+|---|---|---|---|---|---|
+| control | sentence | 7.4 | 3.6 / 3.1 / 0.7 | 0.1 % | 73.3 % |
+| control | word | 13.7 | 11.3 / 1.7 / 0.7 | 1.7 % | 86.8 % |
+| dysarthric | sentence | 33.9 | 20.7 / 11.0 / 2.3 | 0.7 % | 22.3 % |
+| dysarthric | word | 60.7 | 46.7 / 6.6 / 7.3 | 6.6 % | 45.9 % |
+
+F03 and M05 cause 68 % of all word errors. Among single-word clips, 17.8 % of those of 0.8 to 1.2 s produce no text, against 2.5 % of those of 1.2 to 2 s. Errors include words cut short ("steer" to "ste", "weep" to "we"), for control speakers too, and homophones ("hear" to "here").
+
+**Silence after the clip** (big4_q121, + LM; the clips are written with zeros appended and passed with `eval_cli.py --wavs`). Hypothesis: cut-off and empty short words are an edge effect. Results on the full test set, 5214 clips:
+
+| padding | all | control | dysarthric | word | F03 / FC03 / M05 / MC04 | word clips with no text |
+|---|---|---|---|---|---|---|
+| none | 19.51 | 9.15 | 41.55 | 28.97 | 33.78 / 8.53 / 56.26 / 9.91 | 125 |
+| 0.5 s after | 19.23 | 8.88 | 41.25 | 28.0 | 33.18 / 8.72 / 56.52 / 9.07 | 82 |
+| 0.5 s before and after | 19.18 | 8.72 | 41.41 | 28.08 | 32.93 / 8.68 / 57.46 / 8.75 | 50 |
+
+A paired bootstrap over prompts (1000 resamples) gives a 95 % interval of -0.54 to -0.01 for padding after and -0.79 to +0.13 for both sides. On the 1043-clip subset, where the idea was first tried, padding after improved all four speakers; on the full set FC03 and M05 get slightly worse, so that was noise. The hypothesis is partly right: empty results fall by a third (after) to 60 % (both sides), but dysarthric speakers gain little. The firmware's button path now appends 0.5 s before the full-context pass (`PTT_PAD` in `mic.c`), which costs about 0.3 s per utterance. A real button press may behave differently from TORGO's clips; this has not been measured on the board.
+
+**The training mix.** TORGO's dysarthric training speakers are 3.89 h (F01 0.16, F04 0.61, M01 0.82, M02 0.79, M03 0.71, M04 0.80). With `torgo_train` listed twice next to 100.6 h of LibriSpeech, as in every run from atyp2 to big5, dysarthric speech is 6.5 % of the training audio. 4000 steps at `--batch_sec` 150 are at most 167 h of audio, so each dysarthric clip is seen about 3 times. We had never varied this.
+
+**big6** (`train/runs/big6.cmd`): big4 with those dysarthric clips listed 8 more times (`torgo_dys_x8.jsonl`), 26 % of 150 h. Nothing else changes, so the difference measures the mix. Took about 3350 s for training.
+
+| WER %, TORGO test, engine + LM, new grid | big2 | big4 | big6 |
+|---|---|---|---|
+| full context, all | 19.75 | 19.51 | **17.74** |
+| ... control / dysarthric | 9.21 / 42.15 | 9.15 / 41.55 | **8.89 / 36.56** |
+| ... sentence / word | 15.99 / 29.36 | 15.82 / 28.97 | **14.2 / 26.79** |
+| ... F03 / FC03 / M05 / MC04 | 33.81 / 8.82 / 57.92 / 9.69 | 33.78 / 8.53 / 56.26 / 9.91 | **29.77 / 8.51 / 49.4 / 9.36** |
+| chunk 32, all | 25.14 | 25.76 | **23.86** |
+| ... control / dysarthric | 12.9 / 51.17 | 13.51 / 51.8 | 13.01 / **46.92** |
+
+| WER %, float, greedy (`eval_manifest.py`), full / chunk 32 | big4 | big6 |
+|---|---|---|
+| TORGO test | 20.68 / 28.09 | **19.18 / 26.17** |
+| LibriSpeech test-clean | **3.99** / 6.44 | 4.08 / **6.39** |
+| UASpeech B2 | **63.58 / 66.98** | 66.25 / 70.76 |
+| ... control | **36.85 / 39.0** | 39.57 / 42.71 |
+| ... dysarthric | **86.78 / 91.25** | 89.41 / 95.09 |
+
+**Reading this.** On TORGO, every test speaker improves and dysarthric speakers gain 5 points in the engine. LibriSpeech is unchanged. UASpeech gets worse by about 2.6 points at full context, for its control speakers as well. One seed each. Note also that big2 to big6 validation sets contain test speakers, so the choice to keep following this direction used test information; see section 6.
+
+**How much is memorized prompts?** `train/score_unseen.py` and `train/score_vocab.py`. **5168 of the 5214 test clips (99 %) use a prompt that is also in TORGO's training set**, and 10758 of the 11334 training clips use a prompt that is also in the test set (9.33 h of 9.8 h). The 46 test clips with unseen prompts (247 words) point the same way for dysarthric speakers (big4 31.54, big6 28.86, float, full context; 149 words) but are too few to conclude from. Removing shared prompts from training is not possible either: it would leave 0.47 h. On UASpeech, single words let us split by whether the word occurs in TORGO's training prompts, but big6 is worse in both parts, for both groups (in vocabulary, control 28.06 to 31.54, dysarthric 71.45 to 72.94; out of vocabulary, control 47.2 to 49.02, dysarthric 104.87 to 108.83, full context). So UASpeech's loss is not simply TORGO's vocabulary being favored. It could be specialization to TORGO's speakers or recording setup, or the smaller share of LibriSpeech. This run cannot separate them.
+
+**Runs stopped.**
+- **big5** (`train/runs/big5.cmd`): big4 with 12000 steps at 1e-4. Paused by us at about step 5300 to free the GPU for the mix experiment; no result. Validation had reached 6.00 / 6.93 at step 4000, against big4's 5.73 / 7.07 at the same step, on a schedule not comparable at that point. It can resume from its checkpoint.
+- **big7** (`train/runs/big7.cmd`): big6 with simulated dysarthria (`--p_dys 0.3 --dys_severity 0.2,1.0`). Stalled at step 200: simulation stretches clips up to 1.8 times, the 24-layer model then ran out of GPU memory (allocator warning in the log), and progress stopped after 942 s of training time. Stopped by us; no result about simulation. It needs a smaller `--batch_sec`.
+
+**Finding 25:** the share of dysarthric audio in training is a large lever we had left at 6.5 %. Raising it to 26 %, with the same steps and everything else unchanged, lowers WER in the engine at full context from 19.51 to 17.74, and from 41.55 to 36.56 for dysarthric speakers. It is the largest gain from training since the 24-layer model. On an unseen corpus the same change loses about 2.6 points, so the gain must not be read as better recognition of dysarthric speech in general.
+
+**Finding 26:** TORGO's test and training speakers read almost entirely the same prompts (99 % of test clips). Every TORGO result in this log measures new speakers on familiar prompts. An overlap-free report as planned in section 6 is not possible with this split.
+
+**Finding 27:** the language model's weight and bonus cannot be usefully tuned further, since the optimum changes with the speakers; a beam wider than 4 gains at most 0.23 points; padding silence gains about 0.3. All are small next to the training mix or full context.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -850,6 +933,8 @@ The reference for real_20 is "no such authority was given for the court of appea
 12. Context matters more than anything else we tried on the device: the same 24-layer model goes from 25.1 % WER with 1.28 s chunks to 19.8 % with the whole utterance on TORGO test (dysarthric 51.2 to 42.2), and the P4 can
     compute that in about 0.64 times the utterance's length (E12). The firmware now streams partial text, then computes the final text with full context.
 13. Bit-exact kernels do not make transcripts identical across platforms: a one-in-a-million difference from `logf` grows to about 1 % in the logits through the dynamic int8 quantization, which can flip a marginal word (E12).
+14. Dysarthric speech was only 6.5 % of the training audio. Raising it to 26 % lowers WER on the device arithmetic, full context, from 19.5 to 17.7 % (dysarthric 41.6 to 36.6), the largest training gain since the 24-layer model, but it costs about 2.6 points on UASpeech, an unseen corpus (E13).
+15. 99 % of TORGO's test clips use prompts also in its training set, so TORGO scores describe new speakers on familiar prompts (E13).
 
 ## 6. Threats to validity and open issues
 
@@ -860,7 +945,8 @@ The reference for real_20 is "no such authority was given for the court of appea
   held-out speakers. Before the paper, re-run the final configuration with a validation set from a training speaker
   (or held out sessions), and report the test speakers only once.
 - **Vocabulary overlap.** TORGO training and test speakers share prompts. Report an overlap-free subset: test clips
-  whose transcript never appears in training.
+  whose transcript never appears in training. **Correction (E13):** this is not possible with this split. Only 46 of 5214 test clips qualify, and removing the shared
+  prompts from training would leave 0.47 h. State the overlap in the paper and use UASpeech and LibriSpeech as the checks on unfamiliar material.
 - **One seed per run.** Before the paper, repeat the final configuration with at least 3 seeds and report mean and
   spread.
 - **No language model in evaluation.** The deployed system uses one; the final model should also be evaluated with it.
