@@ -1053,6 +1053,21 @@ Same 1947 test-clean clips:
 - Flux for ALS and CP rose to × 0.88–0.89, close to the target.
 - Ataxic speech is still brighter than the source.
 
+**Off-the-shelf Parakeet on our test sets** (`train/eval_parakeet.py`, separate NeMo environment, bf16, model's own greedy decoding, no LM, the same text normalization for reference and output). nvidia/parakeet-tdt-1.1b is the model the Interspeech 2025 Speech Accessibility Project winner fine-tuned. Ours: float, greedy, no LM (eval_manifest.py).
+
+| Model | Parameters | TORGO test | TORGO dysarthric | M05 | UASpeech | UASpeech control / dysarthric | LibriSpeech test-clean |
+|---|---|---|---|---|---|---|---|
+| parakeet-tdt-1.1b, untuned | 1070 M | 23.14 | 43.21 | 53.99 | 60.80 | 26.31 / 90.73 | 1.52 |
+| parakeet-tdt_ctc-110m, untuned | 115 M | 24.40 | 45.72 | 54.59 | 66.62 | 38.52 / 90.99 | 2.62 |
+| big7 (ours, fine-tuned on TORGO train) | 19 M | 18.46 | 39.11 | 66.25 | 65.46 | 40.74 / 94.86 | 4.19 |
+| big7 in the engine, int8 + LM | 19 M | 17.03 | | 46.14 | | | |
+
+UASpeech is unseen by all three models, so it is the fair column. There the 56 times larger model is 4.7 points better, almost all of it on control speakers (26 vs 41 %). On dysarthric UASpeech speakers every model is at about 91–95 %. Most of the remaining errors on control speakers are homophones of isolated words ("their"/"there", "to"/"two", "write"/"right"), which no model can resolve without context.
+
+On TORGO, our 19 M model beats both because it was fine-tuned on TORGO's prompts (99 % shared with test, E13); the untuned models have not seen them. Parakeet gives empty output for 2.9 % of UASpeech clips (206 of 7136), probably digits that the normalization deletes, so its UASpeech number may be slightly pessimistic.
+
+**Finding 35:** size alone buys little on dysarthric speech. Ten times the parameters (115 M → 1.1 B) gains 1.3 points on TORGO and 0.3 on dysarthric UASpeech speakers. Fine-tuning on in-domain speech, even 19 M parameters on 4 hours, gains more on TORGO than 56 times the size, though there the test prompts were seen in training. On unseen words (UASpeech), the large model stays ahead. The challenge winner's 8 % comes from 290 h of real dysarthric training speech on a 1.1 B model; the model alone, untuned, scores 10.4 % on their Test1.
+
 **Finding 34:** sound errors move simulated speech toward real dysarthria on both the statistics and the model's errors, but severe simulated speech still costs about half what real severe speech costs. The pilot set (sim100) was generated with round 2, before these errors existed.
 
 ## 5. Findings so far, for the paper
