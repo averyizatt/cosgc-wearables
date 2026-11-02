@@ -83,6 +83,16 @@ def phone_frames(tg, n_frames, fps):
 
 
 # ------------------------------------------------------------------ error profiles
+REAL = None  # real_errors.py output, set by load_real: each dysarthric training speaker's own error table
+
+
+def load_real(path):
+    global REAL
+    d = __import__("json").load(open(path, encoding="utf-8"))
+    REAL = [v for v in d["speakers"].values() if v["phones"]]
+    return len(REAL)
+
+
 def profile(cond, s, rng):
     """Per-sound error rates at severity s for one simulated speaker. Zero for conditions that are not about articulation."""
     z = dict(subst=0.0, distort=0.0, delete=0.0, final=0.0, cluster=0.0, epen=0.0, vowel=0.0, diph=0.0,
@@ -117,6 +127,12 @@ def profile(cond, s, rng):
     m = np.mean(list(z["weight"].values()))
     z["weight"] = {ph: w / m for ph, w in z["weight"].items()}  # mean 1: the overall rate stays the profile's
     z["habit"] = {ph: pick_substitute(ph, z, rng) for ph in sorted(CONS | VOWELS)}
+    if REAL and cond in DYSARTHRIA:  # measured, not hand-set: one real training speaker's table, scaled by severity relative to theirs
+        t = REAL[int(rng.integers(len(REAL)))]
+        f = s / max(0.3, min(1.0, t["excess_error"] / 0.25))  # a speaker with 25 % excess phone error counts as severity 1
+        z["real"] = {ph: (min(0.9, v["del"] * f), {q: min(0.9, p * f) for q, p in v["sub"].items()}) for ph, v in t["phones"].items()}
+        z["subst"] = 0.0  # substitutions and deletions now come from the table; distortion (which a recognizer cannot count) stays
+        z["delete"] *= 0.3
     return z
 
 
@@ -228,8 +244,15 @@ def apply(f0, sp, ap, phones, z, rng, warp):
         nxt = phones[k + 1] if k + 1 < len(phones) else None
         prv = phones[k - 1] if k > 0 else None
         in_cluster = ph in CONS and ((nxt and nxt[2] in CONS and nxt[3] == w) or (prv and prv[2] in CONS and prv[3] == w))
+        real = z.get("real", {}).get(ph)
+        if real and real[1] and rng.random() < sum(real[1].values()):  # a measured substitution: the sound this speaker's group said instead
+            qs = list(real[1]); w = np.array([real[1][q] for q in qs])
+            dst = qs[int(rng.choice(len(qs), p=w / w.sum()))]
+            _render(ls, f0, ap, a, b, ph, dst, ex, 1.0, rng, warp)
+            log.append(("substitute", ph, dst))
+            continue
         if ph in CONS:
-            p_del = z["delete"] + (z["final"] if last and not first else 0) + (z["cluster"] * 0.5 if in_cluster else 0)
+            p_del = z["delete"] + (z["final"] if last and not first else 0) + (z["cluster"] * 0.5 if in_cluster else 0) + (real[0] if real else 0)
             if rng.random() < p_del * sw:
                 keep[a:b] = False
                 log.append(("delete", ph, ""))

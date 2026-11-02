@@ -477,6 +477,11 @@ def _job(a):
 
 
 _cache = {}
+def _init(real_errors):
+    if real_errors:
+        phonesim.load_real(real_errors)
+
+
 def _work(a):
     return _job((*a, _cache))
 
@@ -512,7 +517,7 @@ def gen(a):
     else:
         pos = 0
     t0, audio = time.time(), 0.0
-    with open(pack, "ab") as fp, open(man, "a", encoding="utf-8", newline="\n") as fm, mp.Pool(a.workers) as pool:
+    with open(pack, "ab") as fp, open(man, "a", encoding="utf-8", newline="\n") as fm, mp.Pool(a.workers, initializer=_init, initargs=(a.real_errors,)) as pool:
         for k, (it, cond, s, y) in enumerate(pool.imap(_work, ((it, a.seed, conds, sevs) for it in items[done:]), chunksize=8)):
             if y is None:
                 continue
@@ -537,6 +542,8 @@ def demo(a):
     os.makedirs(a.outdir, exist_ok=True)
     sf.write(os.path.join(a.outdir, "00_input.wav"), x, SR)
     tg = phonesim.read_textgrid(a.tg) if a.tg else None
+    if a.real_errors:
+        print(phonesim.load_real(a.real_errors), "measured speakers")
     for k, c in enumerate(CONDITIONS, 1):
         t0 = time.time()
         errs = []
@@ -548,9 +555,10 @@ def demo(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("demo"); d.add_argument("wav"); d.add_argument("outdir"); d.add_argument("--severity", type=float, default=0.7); d.add_argument("--tg", default="", help="the clip's TextGrid")
+    d = sub.add_parser("demo"); d.add_argument("wav"); d.add_argument("outdir"); d.add_argument("--severity", type=float, default=0.7); d.add_argument("--tg", default="", help="the clip's TextGrid"); d.add_argument("--real_errors", default="")
     g = sub.add_parser("gen"); g.add_argument("--manifest", required=True); g.add_argument("--out", required=True); g.add_argument("--hours", type=float, default=0.0)
     g.add_argument("--workers", type=int, default=6); g.add_argument("--seed", type=int, default=1); g.add_argument("--conditions", default=""); g.add_argument("--severity", default="0.2,1.0")
+    g.add_argument("--real_errors", default="", help="real_errors.py output: sound errors from measured training speakers")
     g.add_argument("--align_dir", default="", help="phone alignments (TextGrid per utterance, e.g. zenodo.org/records/2619474): sound-level errors")
     a = ap.parse_args()
     demo(a) if a.cmd == "demo" else gen(a)
