@@ -3,6 +3,7 @@
 // serial port today). Lines of the human-readable console log never start with '{', so a client keeps only the JSON lines.
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 #define API_VERSION 1
 
@@ -26,6 +27,10 @@ void api_human_partial(void);                        // the console log just pri
 
 // virtual button: a client can press and release it ("talk" command); true while it is held
 bool api_talk_held(void);
+
+// the microphone audio of each utterance, before gain control, for measuring (only after {"cmd":"set","dump":true})
+bool api_dump_on(void);
+void api_audio(const int16_t *pcm, int n);
 
 // one line of text from a client (a transport calls this with each complete line)
 void api_handle_line(const char *line);

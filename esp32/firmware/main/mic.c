@@ -172,6 +172,8 @@ typedef struct {
     tasr_nemo_stream_t *st;
     int16_t *utt;
     int n_utt, pre_used;
+    int16_t *raw;  // the same audio before gain control, then its pre-roll; only after a client asks (api_dump_on)
+    int n_raw;
     char *text;
     int text_len;
     char idle[32];
@@ -188,7 +190,9 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(LED_BUSY);
     api_state("processing");
     const int64_t t0 = esp_timer_get_time();
-    if (p->st && !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP)) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+    // another press is already waiting: take the streaming text now rather than making that utterance wait for a full-context pass
+    const int next_waiting = uxQueueMessagesWaiting(g_ptt) > 0;
+    if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
     else {
         int n = p->n_utt;
         if (n + PTT_PAD <= PTT_CAP) {  // silence after the release: fewer cut-off and empty short words (docs/EXPERIMENTS.md, E13)
@@ -204,6 +208,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     oled_push(p->text[0] ? p->text : "(nothing recognized)");
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
     api_final(p->text, p->n_utt / 16000.0, after);
+    if (p->raw && api_dump_on() && p->n_raw) api_audio(p->raw, p->n_raw);
     api_state("idle");
     snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
     oled_status(p->idle);
@@ -219,7 +224,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     static char text[4096];
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
-    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, text, sizeof(text), "hold to talk"};
+    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk"};
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st && !MIC_FINAL_FULL ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     oled_start();
     oled_status(p.idle);
@@ -238,6 +243,11 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 active = 1;
                 for (int i = 0; i < npre; i++) p.utt[i] = pre[(pw - npre + i + PTT_PRE) % PTT_PRE];
                 p.n_utt = p.pre_used = npre;
+                p.n_raw = 0;
+                if (p.raw) {
+                    for (int i = 0; i < npre; i++) p.raw[i] = p.raw[PTT_CAP + (pw - npre + i + PTT_PRE) % PTT_PRE];
+                    p.n_raw = npre;
+                }
                 if (p.st) {
                     tasr_nemo_stream_reset(p.st);
                     tasr_nemo_stream_feed(p.st, p.utt, p.n_utt);
@@ -262,7 +272,13 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
         }
         tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
         rd += n;
+        if (api_dump_on() && !p.raw) p.raw = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if (p.raw && active && p.n_raw + n <= PTT_CAP) {
+            memcpy(p.raw + p.n_raw, in, sizeof(int16_t) * n);
+            p.n_raw += n;
+        }
         if (!active) {  // idle: keep the last 0.3 s as pre-roll
+            if (p.raw) for (int i = 0; i < n; i++) p.raw[PTT_CAP + (pw + i) % PTT_PRE] = in[i];
             for (int i = 0; i < n; i++) pre[(pw + i) % PTT_PRE] = blk[i];
             pw = (pw + n) % PTT_PRE;
             npre = npre + n < PTT_PRE ? npre + n : PTT_PRE;

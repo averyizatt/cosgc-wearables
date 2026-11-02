@@ -30,6 +30,7 @@ static int s_nsinks;
 static api_info_t s_info;
 static volatile bool s_talk;       // virtual button
 static volatile bool s_level_on;   // a client asked for level events
+static volatile bool s_dump;       // a client asked for the microphone audio; never on by itself
 static volatile int s_pending;     // the console log has an unfinished line on screen
 static int s_utt;                  // number of the current utterance (starts at 1 with the first "listening")
 static const char *s_state = "idle";
@@ -52,6 +53,7 @@ void api_add_sink(api_sink_t sink)
 }
 bool api_talk_held(void) { return s_talk; }
 void api_human_partial(void) { s_pending = 1; }
+bool api_dump_on(void) { return s_dump; }
 
 // JSON string escaping into dst (UTF-8 passes through); returns bytes written, always terminated
 static int esc(char *dst, int max, const char *s)
@@ -142,6 +144,31 @@ void api_button(bool down)
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
     send_line(line, n);
     xSemaphoreGive(s_fmt_mux);
+}
+
+void api_audio(const int16_t *pcm, int n)
+{
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    enum { BLOCK = 768 };  // samples per line: 1536 bytes, 2048 in base64
+    if (!s_mux) return;
+    for (int off = 0; off < n; off += BLOCK) {
+        const int k = n - off < BLOCK ? n - off : BLOCK;
+        const uint8_t *b = (const uint8_t *)(pcm + off);
+        xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
+        int w = snprintf(s_line, LINE_MAX_BYTES, "{\"type\":\"audio\",\"utt\":%d,\"off\":%d,\"total\":%d,\"b64\":\"", s_utt, off, n);
+        for (int i = 0; i < k * 2; i += 3) {
+            const int left = k * 2 - i;
+            const uint32_t v = b[i] << 16 | (left > 1 ? b[i + 1] << 8 : 0) | (left > 2 ? b[i + 2] : 0);
+            s_line[w++] = tbl[v >> 18];
+            s_line[w++] = tbl[(v >> 12) & 63];
+            s_line[w++] = left > 1 ? tbl[(v >> 6) & 63] : '=';
+            s_line[w++] = left > 2 ? tbl[v & 63] : '=';
+        }
+        s_line[w++] = '"';
+        s_line[w++] = '}';
+        send_line(s_line, w);
+        xSemaphoreGive(s_fmt_mux);
+    }
 }
 
 void api_warn(const char *code, int value)
@@ -237,9 +264,21 @@ void api_handle_line(const char *text)
         const cJSON *on = cJSON_GetObjectItemCaseSensitive(j, "on");
         if (cJSON_IsBool(on)) { s_talk = cJSON_IsTrue(on); reply(id, cmd, true, NULL); }
         else reply(id, cmd, false, "need on:true|false");
-    } else if (!strcmp(cmd, "set")) {  // {"cmd":"set","level":true}
+    } else if (!strcmp(cmd, "set")) {  // {"cmd":"set","level":true}, {"cmd":"set","dump":true}, {"cmd":"set","baud":921600}
         const cJSON *lv = cJSON_GetObjectItemCaseSensitive(j, "level");
+        const cJSON *du = cJSON_GetObjectItemCaseSensitive(j, "dump");
+        const cJSON *ba = cJSON_GetObjectItemCaseSensitive(j, "baud");
+        (void)ba;
         if (cJSON_IsBool(lv)) { s_level_on = cJSON_IsTrue(lv); reply(id, cmd, true, NULL); }
+        else if (cJSON_IsBool(du)) { s_dump = cJSON_IsTrue(du); reply(id, cmd, true, NULL); }
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+        else if (cJSON_IsNumber(ba) && (ba->valueint == 115200 || ba->valueint == 921600)) {  // the ack goes out at the old speed
+            reply(id, cmd, true, NULL);
+            fflush(stdout);
+            uart_wait_tx_done(CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(200));
+            uart_set_baudrate(CONFIG_ESP_CONSOLE_UART_NUM, ba->valueint);
+        }
+#endif
         else reply(id, cmd, false, "unknown setting");
     } else if (!strcmp(cmd, "status")) {
         char line[320];

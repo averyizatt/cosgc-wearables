@@ -24,6 +24,7 @@ python esp32/tools/oido_client.py COM17 --talk 5       # hold the virtual button
 | `final` | `utt`, `text`, `audio_s`, `delay_ms` | the final text (empty if nothing was recognized). `delay_ms` is the time from the button release (or the end-of-speech pause) to this message |
 | `button` | `down` | the push-to-talk button changed (the physical one or the virtual one), in real time |
 | `level` | `db` | microphone level in dBFS, at most 5 a second, only after `{"cmd":"set","level":true}` |
+| `audio` | `utt`, `off`, `total` (samples), `b64` (16 kHz mono 16-bit little-endian, base64) | the microphone audio of the utterance before gain control, in several lines after its `final`, only after `{"cmd":"set","dump":true}`. For measuring; off by default and never stored on the device |
 | `warn` | `code`, `value` | `audio_dropped`: the recognizer fell behind and `value` ms of audio were lost |
 | `status` | `state`, `utt`, `last_delay_ms`, `uptime_s`, `psram_free`, `internal_free`, `internal_min`, `stack_free_main`, `stack_free_worker` | answer to `status` (`internal_min` and the stack figures are the least ever left free, in bytes) |
 | `ble` | `event` (`connected`, `secure`, `disconnected`) | the Bluetooth link changed (USB and Bluetooth builds only) |
@@ -44,6 +45,8 @@ Every command may carry a number `"id"`, which comes back in its `ack`.
 | `{"cmd":"status"}` | send a `status` event |
 | `{"cmd":"talk","on":true}` / `{"cmd":"talk","on":false}` | the virtual push-to-talk button, OR-ed with the physical one. Press, wait, release: the device transcribes what it heard in between |
 | `{"cmd":"set","level":true}` | start (or stop, with `false`) the `level` events |
+| `{"cmd":"set","dump":true}` | start (or stop, with `false`) the `audio` events (button firmware) |
+| `{"cmd":"set","baud":921600}` | serial speed after the `ack`, 115200 or 921600 (ESP32-P4 only; back to 115200 at reset) |
 | `{"cmd":"reboot"}` | restart the firmware |
 | `{"cmd":"ble_unpair"}` | forget every bonded phone and drop the connection (Bluetooth firmware) |
 
