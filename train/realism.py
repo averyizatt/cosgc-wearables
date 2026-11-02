@@ -71,6 +71,8 @@ def main():
     ap.add_argument("--layer", type=int, default=6)
     ap.add_argument("--per_speaker", type=int, default=300)
     ap.add_argument("--per_set", type=int, default=3000)
+    ap.add_argument("--real_group", default="dysarthric", help="the discriminator's real side: dysarthric (is the simulation like "
+                    "real dysarthria?) or control (with a severity-0 set: how detectable is the vocoder alone?)")
     a = ap.parse_args()
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
@@ -117,7 +119,7 @@ def main():
         # discriminator: only meaningful when the simulation's sources are TORGO control speakers
         from_torgo = np.array(["TORGO" in r.get("wav", "").upper() for r in sim])
         if from_torgo.mean() > 0.9:
-            dys = yr == 1
+            dys = yr == (1 if a.real_group == "dysarthric" else 0)
             X = np.concatenate([Xr[dys], Xs]); y = np.r_[np.zeros(dys.sum(), int), np.ones(len(Xs), int)]
             g = np.r_[gr[dys], np.array(["sim:" + r.get("speaker", "?") for r in sim])]
             pd, dauc = grouped_auc(X, y, g)

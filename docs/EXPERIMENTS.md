@@ -1131,6 +1131,43 @@ Float greedy: UASpeech 64.81 (big7 65.46), with its dysarthric speakers at 92.0 
 3. Train longer than 6000 steps, so the set is seen at least once.
 4. Judge only on held-out real speakers (TORGO test, UASpeech).
 
+**First runs of version 4** (2026-11-02, `v4home.cmd` on the training PC).
+
+*Measured error tables* (`real_errors.py`, wav2vec2-xlsr-53-espeak-cv-ft against CMUdict, TORGO training speakers). The recognizer's own phone error on the five control speakers is 17.8 % (16.1–25.1). Excess error per dysarthric speaker:
+
+| Speaker | Phone error | Excess over controls | Most frequent errors above the floor |
+|---|---|---|---|
+| M03 | 17.5 % | −0.3 | none clearly above the floor |
+| F04 | 19.7 % | 1.8 | oy → ao, aw → r |
+| M02 | 57.0 % | 39.1 | er → ah, aw → ae, dh → d, oy → ay, iy → ih |
+| M04 | 62.0 % | 44.2 | dh → d 39 %, oy → ao, p → b 20 %, uh → ah, er → ah |
+| M01 | 62.1 % | 44.3 | dh → d 43 %, uh → ah 34 %, f → v 26 %, t → d 23 %, ng → n |
+| F01 | 67.3 % | 49.4 | th → t 48 %, sh → s 43 %, ch → k 33 %, jh → g 28 % |
+
+Stopping (dh → d, th → t), voicing (p → b, t → d, f → v), place (sh → s) and vowel reduction (er → ah, uh → ah) are what the hand-set profiles assumed.
+
+*Calibration* (`calibrate_sim.py`). The model is base24x, untrained on dysarthric speech, full context. The real side is TORGO's dysarthric training speakers; the simulated side is simval4: 1947 test-clean clips with phone alignments and the measured tables, severity 0.2–1.4.
+
+The first attempt scored 100 % on everything, because `v4home.cmd` passed the base weights as `--init`. eval_manifest.py loads model weights only from `--ckpt`; rerun with `--ckpt init.pt`.
+
+| | all prompts | sentences only |
+|---|---|---|
+| real mild: M03, F04 | 15.3, 22.0 | 10.2, 14.6 |
+| real severe: F01, M02, M04, M01 | 79.1, 84.1, 89.8, 93.9 | 73.3, 75.6, 85.3, 82.2 |
+| simulated, severity 0.2–0.4 / 0.4–0.6 / 0.6–0.8 / 0.8–1.0 / 1.0–1.2 / 1.2–1.4 | 17.1 / 24.3 / 35.4 / 52.7 / 60.4 / 63.0 | (same set) |
+
+By condition: CP 80.1, ALS 64.4, hyperkinetic 61.1, flaccid 57.7, hypokinetic 54.5, UUMN 49.3, spastic 49.3, ataxic 48.1, apraxia 30.1, stutter 21.9, esophageal 15.0, whisper 7.9, electrolarynx 5.4, dysphonia 4.8.
+
+*Realism meter* (`realism.py`, WavLM-base-plus layer 6, mean and spread, logistic regression):
+- Probe, control vs dysarthric, leaving one training speaker out: AUC 0.845. The mild M03 and F04 are judged dysarthric 28 % and 25 % of the time, the severe four 98–100 %, the controls 8–45 %.
+- TORGO control speech after simulation: judged dysarthric 44.3 %, against 3.4 % for the same clips unprocessed.
+- LibriSpeech after simulation: 56.3 %, against 31.2 %.
+- Discriminator, real dysarthric against simulated from TORGO controls: AUC 1.000 for every condition. The simulation is trivially told apart; the test of the vocoder alone follows.
+
+*Voice conversion trial:* not run. `torch.hub` could not resolve the repository's default branch; retried with the branch named.
+
+**Finding 39:** with sound-level errors and measured error tables, the simulator spans mild real speakers (severity 0.3–0.44 matches M03 and F04) and reaches 60–63 %. Real severe speakers cost 73–85 % on sentences, so the gap at the severe end is about three quarters closed, from about half (Finding 34). The measured errors agree with the clinical descriptions the profiles were built on. But a linear classifier separates simulated from real speech perfectly, so the simulation carries a strong fingerprint the model could learn as a shortcut.
+
 ### E17. A confidence meter on the device (2026-11-02)
 
 **Question:** can the device tell the user when its text is probably wrong? A wrong transcript shown with confidence is worse than one marked as doubtful.

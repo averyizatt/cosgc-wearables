@@ -44,7 +44,7 @@ def main():
     a = ap.parse_args()
     import torch
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    vc = torch.hub.load("bshall/knn-vc", "knn_vc", prematched=True, trust_repo=True, pretrained=True, device=dev)
+    vc = torch.hub.load("bshall/knn-vc:master", "knn_vc", prematched=True, trust_repo=True, pretrained=True, device=dev)
     rng = np.random.default_rng(a.seed)
     src = [json.loads(l) for l in open(a.source, encoding="utf-8") if l.strip()]
     tgt = [json.loads(l) for l in open(a.targets, encoding="utf-8") if l.strip()]
