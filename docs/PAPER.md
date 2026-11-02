@@ -72,7 +72,7 @@ TORGO test, device engine, int8 + LM unless noted. Result files: `~/lmtest/<mode
 | 4 | big4 | more training on full context | | 19.51 / 41.55 | E13 | tentative (small) |
 | 5 | big6 | dysarthric share of audio 6.5 → 26 % | 23.86 / 46.92 | 17.74 / 36.56 | E13 | solid |
 | 6 | big7 (on the board) | + mel-level simulated dysarthria on 30 % of LibriSpeech clips | 23.31 / 45.99 | 17.03 / 35.43 | E15 | solid (CI −1.08..−0.35) |
-| 7 | big9 | + 120 h of waveform-simulated speech (round 2) | | | E15 | pending |
+| 7 | big9 | + 120 h of waveform-simulated speech (round 2), same steps | 25.09 / 46.75 | 18.41 / 36.76 | E15 | worse (CI +0.94..+1.84); confounded: real data seen half as often (F38) |
 
 Per speaker, final, row 6: F03 29.77, M05 46.14, FC03 7.74, MC04 9.14. Row 6 on other sets, float greedy: UASpeech 65.46 (shipped 72.8
 streaming), LibriSpeech 4.19 (shipped 4.01).

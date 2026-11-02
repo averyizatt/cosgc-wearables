@@ -1070,6 +1070,22 @@ On TORGO, our 19 M model beats both because it was fine-tuned on TORGO's prompts
 
 **Finding 34:** sound errors move simulated speech toward real dysarthria on both the statistics and the model's errors, but severe simulated speech still costs about half what real severe speech costs. The pilot set (sim100) was generated with round 2, before these errors existed.
 
+**big9 result** (`train/runs/big9.cmd`: big6's mix + sim100, 120 h of round-2 simulated speech, 6000 steps of 100 s).
+
+Engine, TORGO test, against big7 (paired bootstrap):
+
+| | big7 | big9 | CI of the difference |
+|---|---|---|---|
+| final, all | 17.03 | 18.41 | +0.94..+1.84 |
+| live (chunk 32), all | 23.31 | 25.09 | +1.28..+2.26 |
+| final F03 | 29.77 | 31.81 | +0.82..+3.49 |
+| final M05 | 46.14 | 46.14 | −1.76..+1.90 |
+| final FC03 / MC04 | 7.74 / 9.14 | 9.16 / 10.53 | both worse |
+
+Float greedy: UASpeech 64.81 (big7 65.46), with its dysarthric speakers at 92.0 against 94.86, the best of any model so far. LibriSpeech 4.21 (4.19).
+
+**Finding 38:** big9 is worse on TORGO, mostly for the control speakers, and better on unseen dysarthric speech (UASpeech). The comparison is confounded. Adding 120 h with the same number of steps halved how often the model saw TORGO's control speakers and LibriSpeech: their share of the 302 h set is about half of what it was in big6's 150 h. The dysarthric clips were listed twice to keep their share, which matches the pattern: controls worse, dysarthric flat, unseen dysarthric better. The next simulated run must hold every real set's exposure fixed by scaling the steps with the set's size. big7 stays on the board.
+
 ### E16. The simulator as the main route: sound-level errors from phone alignments (2026-11-02, built, not yet measured)
 
 **Why.** Finding 35: the large model's advantage comes from hundreds of hours of real dysarthric speech, which we cannot get. Finding 34: our simulation is half as hard as real severe speech, and what it lacks is wrong sounds. Without knowing where each sound is, the simulator can only weaken frames. With a phone alignment it can say one sound in place of another.
