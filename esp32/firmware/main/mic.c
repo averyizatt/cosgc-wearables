@@ -53,7 +53,7 @@ static void capture_task(void *arg)
     int dropped = 0;  // samples lost in the current overflow episode
 #if CONFIG_TASR_PTT_GPIO >= 0
     uint32_t queued = 0;           // samples queued so far
-    int state = 0, seen = 0;       // debounced button state; blocks in a row that read the other state
+    int state = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0, seen = 0;  // debounced button state (a pin low at startup is not a press); blocks in a row that read the other state
     uint32_t seen_at = 0;
 #endif
     for (;;) {
@@ -151,6 +151,9 @@ static void mic_start(void)
     ESP_ERROR_CHECK(gpio_config(&io));
     g_ptt = xQueueCreate(16, sizeof(ptt_ev_t));
     ESP_LOGI(TAG, "push-to-talk button on GPIO%d (to GND): hold it while you speak", CONFIG_TASR_PTT_GPIO);
+    vTaskDelay(pdMS_TO_TICKS(10));  // let the pull-up settle
+    if (gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0)
+        ESP_LOGW(TAG, "GPIO%d reads low with nothing pressed: check the button's wiring (ignored until it reads high)", CONFIG_TASR_PTT_GPIO);
 #endif
     xTaskCreatePinnedToCore(capture_task, "mic_cap", 4096, NULL, configMAX_PRIORITIES - 1, NULL, TASR_AUX_CORE);
     ESP_LOGI(TAG, "listening (BCLK %d WS %d DIN %d)", CONFIG_TASR_I2S_BCLK, CONFIG_TASR_I2S_WS, CONFIG_TASR_I2S_DIN);
@@ -162,6 +165,7 @@ static void mic_start(void)
 #define PTT_PRE 4800  // 0.3 s of audio from before the press (a word started as the button goes down)
 #define PTT_MIN 2400  // presses shorter than 0.15 s are ignored
 #define PTT_CAP MIC_UTT_SAMPLES  // utterance mode: the recording buffer (streaming models have no length limit)
+#define PTT_PAD 8000  // 0.5 s of silence added before the final full-context pass
 typedef struct {
     const tasr_nemo_t *m;
     struct tasr_decoder *dec;
@@ -185,7 +189,14 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     api_state("processing");
     const int64_t t0 = esp_timer_get_time();
     if (p->st && !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP)) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
-    else tasr_nemo_transcribe(p->m, p->utt, p->n_utt, p->dec, p->text, p->text_len, NULL, 0, NULL);
+    else {
+        int n = p->n_utt;
+        if (n + PTT_PAD <= PTT_CAP) {  // silence after the release: fewer cut-off and empty short words (docs/EXPERIMENTS.md, E13)
+            memset(p->utt + n, 0, sizeof(int16_t) * PTT_PAD);
+            n += PTT_PAD;
+        }
+        tasr_nemo_transcribe(p->m, p->utt, n, p->dec, p->text, p->text_len, NULL, 0, NULL);
+    }
     const int64_t t1 = esp_timer_get_time();
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
     printf("\r%s   [%.1f s audio, final text %.0f ms after %s]\n", p->text, p->n_utt / 16000.0, after,
@@ -238,6 +249,9 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 active = 0;
                 npre = 0;
                 ptt_end(&p, ev.t_us);
+            } else if (!ev.down) {  // released without a press we acted on (the pin was low at startup)
+                oled_status(p.idle);
+                led_set(LED_IDLE);
             }
         }
         if (active && !p.st && p.n_utt + n > PTT_CAP) {  // utterance mode, recording full while still held

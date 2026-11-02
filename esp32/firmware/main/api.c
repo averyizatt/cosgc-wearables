@@ -136,6 +136,7 @@ void api_final(const char *text, double audio_s, double delay_ms)
 
 void api_button(bool down)
 {
+    if (!s_mux) return;  // a press while the model is still loading: api_start has not run
     char line[64];
     const int n = snprintf(line, sizeof(line), "{\"type\":\"button\",\"down\":%s}", down ? "true" : "false");
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
@@ -145,6 +146,7 @@ void api_button(bool down)
 
 void api_warn(const char *code, int value)
 {
+    if (!s_mux) return;
     char line[96];
     const int n = snprintf(line, sizeof(line), "{\"type\":\"warn\",\"code\":\"%s\",\"value\":%d}", code, value);
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
