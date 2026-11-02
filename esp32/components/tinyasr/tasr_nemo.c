@@ -952,6 +952,9 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     return tasr_nemo_transcribe_from(m, pcm, n, dec, text, maxlen, logit_sink, max_frames, n_frames, NULL, 0);
 }
 
+static tasr_nemo_conf_t g_conf;  // of the last full pass; one full pass runs at a time
+void tasr_nemo_last_confidence(tasr_nemo_conf_t *c) { *c = g_conf; }
+
 int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_decoder_t *dec, char *text, int maxlen,
                               float *logit_sink, int max_frames, int *n_frames, const float *kept, int n_kept)
 {
@@ -1281,6 +1284,9 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
     float *lg = (float *)tasr_alloc(sizeof(float) * RB * V1, 0);
     float *lp = (float *)tasr_alloc(sizeof(float) * V1, 0);
     int prev = -1, len = 0, nf = 0;
+    double conf_sum = 0.0;
+    float conf_min = 0.f;
+    int conf_n = 0;
     if (dec) tasr_decoder_reset(dec);
     if (maxlen) text[0] = 0;
     for (int t0 = 0; t0 < T; t0 += RB) {
@@ -1295,11 +1301,20 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
             int best = 0;
             float bv = l[0];
             for (int v = 1; v < V1; v++) if (l[v] > bv) { bv = l[v]; best = v; }
-            if (dec) {
-                NB(tdc);
+            float lz = 0.f;
+            if (dec || (best != prev && best != m->V)) {
                 float z = 0.f;
                 for (int v = 0; v < V1; v++) z += expf(l[v] - bv);
-                const float lz = bv + logf(z);
+                lz = bv + logf(z);
+            }
+            if (best != prev && best != m->V) {  // a token emitted here: how sure was the model of it
+                const float lpb = bv - lz;
+                conf_sum += lpb;
+                if (conf_n == 0 || lpb < conf_min) conf_min = lpb;
+                conf_n++;
+            }
+            if (dec) {
+                NB(tdc);
                 lp[0] = l[m->V] - lz;
                 for (int v = 0; v < m->V; v++) lp[v + 1] = l[v] - lz;
                 tasr_decoder_step(dec, lp);
@@ -1320,6 +1335,9 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
         }
     }
     NE(thd, N_HEAD);
+    g_conf.tokens = conf_n;
+    g_conf.mean_logp = conf_n ? (float)(conf_sum / conf_n) : 0.f;
+    g_conf.min_logp = conf_min;
     if (n_frames) *n_frames = nf;
     if (maxlen && text[0] == ' ') memmove(text, text + 1, strlen(text));
     // free

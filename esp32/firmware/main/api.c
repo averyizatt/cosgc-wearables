@@ -125,13 +125,17 @@ void api_partial(const char *text)
     xSemaphoreGive(s_fmt_mux);
 }
 
-void api_final(const char *text, double audio_s, double delay_ms)
+void api_final(const char *text, double audio_s, double delay_ms, int conf_level, float conf)
 {
+    static const char *const names[] = {"low", "unsure", "sure"};
     xSemaphoreTake(s_fmt_mux, portMAX_DELAY);
     s_last_delay_ms = delay_ms;
-    char head[64], tail[96];
+    char head[64], tail[160];
     snprintf(head, sizeof(head), "{\"type\":\"final\",\"utt\":%d,\"text\":", s_utt);
-    snprintf(tail, sizeof(tail), ",\"audio_s\":%.1f,\"delay_ms\":%.0f}", audio_s, delay_ms);
+    if (conf_level >= 0 && conf_level <= 2)
+        snprintf(tail, sizeof(tail), ",\"audio_s\":%.1f,\"delay_ms\":%.0f,\"confidence\":\"%s\",\"conf\":%.3f}", audio_s, delay_ms, names[conf_level], conf);
+    else
+        snprintf(tail, sizeof(tail), ",\"audio_s\":%.1f,\"delay_ms\":%.0f}", audio_s, delay_ms);
     send_fmt_text(head, text, tail);
     xSemaphoreGive(s_fmt_mux);
 }

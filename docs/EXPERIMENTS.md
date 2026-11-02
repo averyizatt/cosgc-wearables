@@ -1115,6 +1115,40 @@ On TORGO, our 19 M model beats both because it was fine-tuned on TORGO's prompts
 3. Train longer than 6000 steps, so the set is seen at least once.
 4. Judge only on held-out real speakers (TORGO test, UASpeech).
 
+### E17. A confidence meter on the device (2026-11-02)
+
+**Question:** can the device tell the user when its text is probably wrong? A wrong transcript shown with confidence is worse than one marked as doubtful.
+
+**Score.** During the full-context pass, the engine takes the log posterior of each token at the frame where the model emits it (greedy CTC peaks), and keeps their mean and their minimum (`tasr_nemo_last_confidence`). This adds one softmax normalization per emitted token, and WER is unchanged (17.03 %). A clip where nothing was emitted has no confidence. The host tool prints the score on stderr; `eval_cli.py` stores it per clip, and `esp32/host/conf_calib.py` calibrates it.
+
+**Calibration.** big7_q121 + LM, TORGO test, 5214 clips, 72.4 % fully right. The measure and the thresholds were chosen on every other clip and reported on the rest. All four test speakers are on both sides: there are only four.
+
+AUC for "the transcript is fully right":
+
+| Measure | AUC |
+|---|---|
+| mean | 0.873 |
+| min | 0.893 |
+| (mean + min) / 2 | 0.894 (chosen) |
+
+Levels, sure ≥ −0.120 > unsure ≥ −0.424 > probably wrong:
+
+| Level | Held-out clips | Fully right | WER |
+|---|---|---|---|
+| sure | 53.6 % | 94.6 % | 3.9 % |
+| unsure | 22.7 % | 65.0 % | 14.5 % |
+| probably wrong | 23.7 % | 26.7 % | 49.3 % |
+
+Control speakers' clips are 68 % sure and 12 % probably wrong; dysarthric speakers' clips are 25 % sure and 48 % probably wrong.
+
+**Device.**
+- `mic.c` marks the screen's history: "text ?" for unsure, "?? text" for probably wrong, nothing for sure.
+- The serial "final" message gains "confidence" (sure / unsure / low) and "conf".
+- Text from streaming alone (a press while another is waiting) has no level.
+- Built; not yet flashed (the board was not connected).
+
+**Finding 36:** the model knows fairly well when it is wrong. Half of all utterances can be shown as sure with 95 % of them fully right, and a quarter flagged as probably wrong, where half the words are wrong. For a user this is the difference between trusting the screen and being misled by it. The thresholds come from TORGO test and should be checked on new speakers and on the device's own microphone.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe

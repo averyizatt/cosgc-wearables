@@ -19,7 +19,9 @@ void api_start(const api_info_t *info);  // starts the command reader; announces
 // events (any task)
 void api_state(const char *state);                   // "idle" | "listening" | "processing"; "listening" starts a new utterance
 void api_partial(const char *text);                  // text so far of the current utterance (streaming models)
-void api_final(const char *text, double audio_s, double delay_ms);  // final text; delay: from the button release (or the pause)
+// final text; delay: from the button release (or the pause); conf_level: 2 sure, 1 unsure, 0 probably wrong, -1 not measured
+// (streaming-only text); conf: the engine's score behind the level (mic.c conf_score)
+void api_final(const char *text, double audio_s, double delay_ms, int conf_level, float conf);
 void api_button(bool down);                          // the physical button changed (real time, before the recognizer gets there)
 void api_warn(const char *code, int value);          // e.g. "audio_dropped" (value: ms of audio lost)
 void api_level(float dbfs);                          // microphone level of a 20 ms block (sent only when a client asked for it)

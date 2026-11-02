@@ -156,6 +156,11 @@ int main(int argc, char **argv)
         }
         double sec = (double)(clock() - t0) / CLOCKS_PER_SEC;
         printf("%s\t%s\n", argv[i], text);
+        if (nemo && !ns_) {  // full pass: the model's confidence, on stderr so stdout keeps its format
+            tasr_nemo_conf_t c;
+            tasr_nemo_last_confidence(&c);
+            fprintf(stderr, "CONF\t%s\t%.4f\t%.4f\t%d\n", argv[i], c.mean_logp, c.min_logp, c.tokens);
+        }
         fprintf(stderr, "  %.2f s audio, %.3f s CPU (host)\n", ns / 16000.0, sec);
         free(pcm);
     }

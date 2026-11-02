@@ -24,6 +24,29 @@
 
 #ifdef CONFIG_TASR_MODE_MIC
 #define RING_SAMPLES MIC_RING_SAMPLES  // mic.h
+
+// Confidence meter (docs/EXPERIMENTS.md, E17): after a full-context pass, the engine reports how sure the model was of each token it
+// emitted (tasr_nemo_last_confidence). The score and the two thresholds were fitted on TORGO test with the host engine (esp32/host/
+// conf_calib.py, half the clips) and checked on the other half. Shown on the screen as "?" after the text (unsure) or "??" before it
+// (probably wrong); streaming-only text has no level.
+#define CONF_SURE  (-0.120f)  // score at or above: sure (TORGO test, held-out half: 95 % of these clips fully right, WER 3.9 %)
+#define CONF_WRONG (-0.424f)  // score below: probably wrong (27 % fully right, WER 49 %); between: unsure (65 %, WER 14.5 %)
+__attribute__((unused)) static float conf_score(void)
+{
+    tasr_nemo_conf_t c;
+    tasr_nemo_last_confidence(&c);
+    return c.tokens ? 0.5f * (c.mean_logp + c.min_logp) : -99.f;
+}
+__attribute__((unused)) static int conf_level(float s) { return s >= CONF_SURE ? 2 : (s < CONF_WRONG ? 0 : 1); }
+// the line for the screen's history: the text with its confidence mark
+__attribute__((unused)) static const char *conf_line(char *buf, size_t n, const char *text, int level)
+{
+    if (!text[0]) return "(nothing recognized)";
+    if (level == 1) snprintf(buf, n, "%s ?", text);
+    else if (level == 0) snprintf(buf, n, "?? %s", text);
+    else return text;
+    return buf;
+}
 #ifdef CONFIG_TASR_BLE
 #define HAS_BLE true
 #else
@@ -201,8 +224,10 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     const int64_t t0 = esp_timer_get_time();
     // another press is already waiting: take the streaming text now rather than making that utterance wait for a full-context pass
     const int next_waiting = uxQueueMessagesWaiting(g_ptt) > 0;
+    int full = 0;  // a full-context pass ran (it has a confidence)
     if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
     else {
+        full = 1;
         if (p->st && p->n_utt >= PTT_PREVIEW) {  // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work)
             tasr_nemo_stream_finish(p->st, p->text, p->text_len);
             ptt_partial(p->text);
@@ -220,9 +245,12 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
     printf("\r%s   [%.1f s audio, final text %.0f ms after %s]\n", p->text, p->n_utt / 16000.0, after,
            released_us ? "the button was released" : "the 20 s recording limit (still holding: next part follows)");
-    oled_push(p->text[0] ? p->text : "(nothing recognized)");
+    const float cs = full ? conf_score() : 0.f;
+    const int cl = full && p->text[0] ? conf_level(cs) : -1;
+    static char line[600];
+    oled_push(conf_line(line, sizeof(line), p->text, cl));
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
-    api_final(p->text, p->n_utt / 16000.0, after);
+    api_final(p->text, p->n_utt / 16000.0, after, cl, cs);
     if (p->raw && api_dump_on() && p->n_raw) api_audio(p->raw, p->n_raw);
     api_state("idle");
     snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
@@ -376,9 +404,17 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
 #endif
             const double dt = (esp_timer_get_time() - t0) / 1e6;
             printf("\r%s   [%.1f s audio, final text %.0f ms after the pause was detected]\n", text, n / 16000.0, dt * 1000);
-            oled_push(text[0] ? text : "(nothing recognized)");
+#ifdef CONFIG_TASR_FINAL_FULL
+            const float cs = conf_score();
+            const int cl = text[0] ? conf_level(cs) : -1;
+#else
+            const float cs = 0.f;
+            const int cl = -1;
+#endif
+            static char line[600];
+            oled_push(conf_line(line, sizeof(line), text, cl));
             led_set(text[0] ? LED_DONE : LED_NOTHING);
-            api_final(text, n / 16000.0, dt * 1000);
+            api_final(text, n / 16000.0, dt * 1000, cl, cs);
             api_state("idle");
             oled_status(idle);
             tasr_nemo_stream_reset(st);
@@ -406,9 +442,12 @@ void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec)
         tasr_nemo_transcribe(m, utt, n, dec, text, sizeof(text), NULL, 0, NULL);
         const double dt = (esp_timer_get_time() - t0) / 1e6;
         printf("%s   [%.1f s audio, %.2f s compute, RTF %.2f]\n", text, n / 16000.0, dt, dt / (n / 16000.0));
-        oled_push(text[0] ? text : "(nothing recognized)");
+        const float cs = conf_score();
+        const int cl = text[0] ? conf_level(cs) : -1;
+        static char line[600];
+        oled_push(conf_line(line, sizeof(line), text, cl));
         led_set(text[0] ? LED_DONE : LED_NOTHING);
-        api_final(text, n / 16000.0, dt * 1000);
+        api_final(text, n / 16000.0, dt * 1000, cl, cs);
         api_state("idle");
         oled_status(idle);
         hearing = 0;

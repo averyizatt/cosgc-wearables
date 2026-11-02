@@ -39,6 +39,10 @@ const float *tasr_nemo_stream_kept(const tasr_nemo_stream_t *s, int *n_rows);
 int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, struct tasr_decoder *dec, char *text, int maxlen,
                               float *logit_sink, int max_frames, int *n_frames, const float *kept, int n_kept);
 void tasr_nemo_stream_set_sink(tasr_nemo_stream_t *s, float *logits, int max_frames);  // optional raw logits
+// How sure the model was in the last full pass (tasr_nemo_transcribe / _from): log posterior of each token at the frame the
+// model emitted it (greedy CTC peaks), averaged and the lowest one. A recognizer-side cue for the user, calibrated on host.
+typedef struct { float mean_logp, min_logp; int tokens; } tasr_nemo_conf_t;
+void tasr_nemo_last_confidence(tasr_nemo_conf_t *c);
 void tasr_nemo_stream_free(tasr_nemo_stream_t *s);
 int tasr_nemo_stream_supported(const tasr_nemo_t *m);
 

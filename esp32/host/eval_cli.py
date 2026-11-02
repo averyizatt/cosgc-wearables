@@ -72,19 +72,22 @@ def main():
     batches = [items[i::a.jobs] for i in range(a.jobs)]
 
     def run(batch):
-        out = subprocess.run(cli + [it["_wav"] for it in batch], capture_output=True, text=True).stdout
-        return dict(l.split("\t", 1) if "\t" in l else (l, "") for l in out.splitlines())
+        p = subprocess.run(cli + [it["_wav"] for it in batch], capture_output=True, text=True)
+        conf = {f[1]: [float(f[2]), float(f[3]), int(f[4])] for f in (l.split("\t") for l in p.stderr.splitlines() if l.startswith("CONF\t")) if len(f) == 5}
+        return dict(l.split("\t", 1) if "\t" in l else (l, "") for l in p.stdout.splitlines()), conf
 
-    hyp = {}
+    hyp, conf = {}, {}
     with ThreadPoolExecutor(a.jobs) as ex:
-        for h in ex.map(run, batches):
-            hyp.update(h)
+        for h, c in ex.map(run, batches):
+            hyp.update(h); conf.update(c)
     acc = collections.defaultdict(lambda: [0, 0, 0])  # edits, ref words, clips
     utts = []
     for it in items:
         r, h = norm(it["text"]).split(), norm(hyp.get(it["_wav"], "")).split()
         e = edits(r, h)
-        utts.append({"wav": it["wav"], "ref": " ".join(r), "hyp": " ".join(h), "edits": e})
+        utts.append({"wav": it["wav"], "ref": " ".join(r), "hyp": " ".join(h), "edits": e}
+                    | ({"conf_mean": conf[it["_wav"]][0], "conf_min": conf[it["_wav"]][1], "tokens": conf[it["_wav"]][2]} if it["_wav"] in conf else {})
+                    | {k: it[k] for k in ("speaker", "group", "kind") if k in it})
         keys = ["all"] + [f"by_{k}/{it[k]}" for k in ("group", "speaker", "mic", "kind") if k in it]
         for key in keys:
             v = acc[key]; v[0] += e; v[1] += len(r); v[2] += 1
