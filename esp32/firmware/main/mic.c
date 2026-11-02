@@ -166,6 +166,7 @@ static void mic_start(void)
 #define PTT_MIN 2400  // presses shorter than 0.15 s are ignored
 #define PTT_CAP MIC_UTT_SAMPLES  // utterance mode: the recording buffer (streaming models have no length limit)
 #define PTT_PAD 8000  // 0.5 s of silence added before the final full-context pass
+#define PTT_PREVIEW 32000  // from 2 s of audio the full-context pass takes long enough that the streaming text is finished and shown first
 typedef struct {
     const tasr_nemo_t *m;
     struct tasr_decoder *dec;
@@ -178,6 +179,14 @@ typedef struct {
     int text_len;
     char idle[32];
 } ptt_t;
+static void ptt_partial(const char *text)
+{
+    printf("\r... %s", text);
+    fflush(stdout);
+    oled_partial(text);
+    api_human_partial();
+    api_partial(text);
+}
 // the utterance ends here: final text (released_us: when the button went up, or 0 at the utterance-mode limit)
 static void ptt_end(ptt_t *p, int64_t released_us)
 {
@@ -194,12 +203,18 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     const int next_waiting = uxQueueMessagesWaiting(g_ptt) > 0;
     if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
     else {
+        if (p->st && p->n_utt >= PTT_PREVIEW) {  // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work)
+            tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+            ptt_partial(p->text);
+        }
         int n = p->n_utt;
         if (n + PTT_PAD <= PTT_CAP) {  // silence after the release: fewer cut-off and empty short words (docs/EXPERIMENTS.md, E13)
             memset(p->utt + n, 0, sizeof(int16_t) * PTT_PAD);
             n += PTT_PAD;
         }
-        tasr_nemo_transcribe(p->m, p->utt, n, p->dec, p->text, p->text_len, NULL, 0, NULL);
+        int kept = 0;  // the stream already ran the front end over this audio: about a quarter of the pass's work
+        const float *kx = p->st ? tasr_nemo_stream_kept(p->st, &kept) : NULL;
+        tasr_nemo_transcribe_from(p->m, p->utt, n, p->dec, p->text, p->text_len, NULL, 0, NULL, kx, kx ? kept : 0);
     }
     const int64_t t1 = esp_timer_get_time();
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
@@ -226,6 +241,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     tasr_seg_init(&seg, NULL, 0);
     ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk"};
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st && !MIC_FINAL_FULL ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
+    if (p.st && MIC_FINAL_FULL) tasr_nemo_stream_keep(p.st, PTT_CAP);
     oled_start();
     oled_status(p.idle);
     api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true, HAS_BLE});
@@ -288,11 +304,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             const int before = tasr_nemo_stream_text(p.st, NULL, 0);
             if (tasr_nemo_stream_feed(p.st, blk, n) > before) {
                 tasr_nemo_stream_text(p.st, text, sizeof(text));
-                printf("\r... %s", text);
-                fflush(stdout);
-                oled_partial(text);
-                api_human_partial();
-                api_partial(text);
+                ptt_partial(text);
             }
         }
         if ((!p.st || MIC_FINAL_FULL) && p.n_utt + n <= PTT_CAP) memcpy(p.utt + p.n_utt, blk, sizeof(int16_t) * n);

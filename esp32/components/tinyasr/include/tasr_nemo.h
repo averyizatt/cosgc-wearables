@@ -32,6 +32,12 @@ void tasr_nemo_stream_reset(tasr_nemo_stream_t *s);
 int tasr_nemo_stream_feed(tasr_nemo_stream_t *s, const int16_t *pcm, int n);   // returns encoder frames decoded so far
 int tasr_nemo_stream_text(tasr_nemo_stream_t *s, char *text, int maxlen);      // partial transcript
 int tasr_nemo_stream_finish(tasr_nemo_stream_t *s, char *text, int maxlen);    // end of utterance: final transcript
+// Full-context pass after a stream: the stream keeps the front end's output (up to max_samples of audio), and
+// tasr_nemo_transcribe_from starts after those rows. pcm must begin with the audio the stream was fed; it may be longer.
+int tasr_nemo_stream_keep(tasr_nemo_stream_t *s, int max_samples);              // call once; 0: no memory, nothing kept
+const float *tasr_nemo_stream_kept(const tasr_nemo_stream_t *s, int *n_rows);
+int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, struct tasr_decoder *dec, char *text, int maxlen,
+                              float *logit_sink, int max_frames, int *n_frames, const float *kept, int n_kept);
 void tasr_nemo_stream_set_sink(tasr_nemo_stream_t *s, float *logits, int max_frames);  // optional raw logits
 void tasr_nemo_stream_free(tasr_nemo_stream_t *s);
 int tasr_nemo_stream_supported(const tasr_nemo_t *m);

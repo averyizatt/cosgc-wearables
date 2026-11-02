@@ -904,6 +904,69 @@ A paired bootstrap over prompts (1000 resamples) gives a 95 % interval of -0.54 
 
 **Finding 27:** the language model's weight and bonus cannot be usefully tuned further, since the optimum changes with the speakers; a beam wider than 4 gains at most 0.23 points; padding silence gains about 0.3. All are small next to the training mix or full context.
 
+### E14. First speech at the board, its noise, and where the wait goes (2026-11-01)
+
+**Live use.** Firmware with the button on GPIO21 and big6_q121. A first run in a room with several people talking at a distance gave poor text, with speech at p90 −38 to −45 dBFS over a noise floor of −57 dBFS. No crash, and the physical button worked. An early build crash-looped because `api_button` ran before `api_start` (null mutex) when the pin read low at startup; fixed, and a pin low at startup is now reported, not treated as a press. A press made while a final pass was running waited for it, so delays stacked (a 2.4 s utterance waited 4.6 s); a waiting press now takes the streaming text.
+
+**Reading at 15 cm.** `esp32/tools/read_test.py` (Harvard sentences, phrases, words; saves the microphone audio before gain control). One typical speaker, one session, stopped after 4 of 35 prompts, so this is not a score: three sentences perfect in both live and final text; on the fourth the words of the prompt were all recognized after what looks like a restart by the reader (not confirmed by listening). Speech blocks p90 −29 to −38 dBFS, noise −58 dBFS, about 20 to 29 dB apart.
+
+**Microphone path.** The ES8311 is already at its maximum analog gain (30 dB); digital gain cannot improve the signal-to-noise ratio. The NS4150B amplifier only drives the speaker. The noise is not white: per FFT bin it is highest at 200 to 800 Hz and about 20 dB lower above 5 kHz.
+
+**Level control** (big6_q121, full context + LM, every 5th TORGO test clip, 1043 clips; speech −42 dBFS, white noise −57 dBFS):
+
+| Level control | all | control | dysarthric |
+|---|---|---|---|
+| clean recordings | 17.74 | 8.91 | 34.85 |
+| none | 24.87 | 12.21 | 49.40 |
+| firmware AGC, starting cold | 24.17 | 12.49 | 46.80 |
+| firmware AGC, settled | 24.02 | 11.99 | 47.34 |
+| whole clip normalized | 24.39 | 12.38 | 47.67 |
+
+**Measured noise and front-end treatments** (`train/room_sim.py`: noise of the spectrum measured on the board's recordings at −58 dBFS, fixed gain; same clips). Fixed before scoring. Spectral subtraction with the noise spectrum known, 32 ms frames: nr1 over-subtraction 1, floor −10 dB; nr2 over-subtraction 2, floor −20 dB. hp: 200 Hz second-order high-pass. Stationary noise of known spectrum is the best case for noise reduction. CI: bootstrap over clips of the paired difference, 95 %.
+
+| Speech level (distance, roughly) | treatment | all | control | dysarthric | difference from none (CI) |
+|---|---|---|---|---|---|
+| −35 dBFS (reading close) | none | 18.18 | 8.40 | 37.13 | |
+| −42 dBFS | none | 20.47 | 10.08 | 40.61 | |
+| | nr1 | 20.51 | 9.64 | 41.59 | +0.04 (−0.74..0.82) |
+| | nr2 | 21.58 | 10.64 | 42.78 | +1.11 (0.11..2.12) |
+| | hp | 21.03 | 10.03 | 42.35 | +0.56 (−0.04..1.14) |
+| −50 dBFS | none | 31.08 | 18.43 | 55.59 | |
+| | nr1 | 28.31 | 16.19 | 51.79 | −2.77 (−3.94..−1.69) |
+| | nr2 | 28.86 | 15.85 | 54.07 | −2.22 (−3.58..−0.98) |
+| | hp | 30.97 | 18.66 | 54.83 | −0.11 (−0.94..0.77) |
+
+Chunk 32 at −42 dBFS: 27.01 (control 14.45, dysarthric 51.36), against 23.87 clean.
+
+**Finding 28:** on this microphone, level control barely matters and the signal-to-noise ratio does. Real, low-frequency noise costs far less than the white noise we first simulated (2.7 points at −42 dBFS, not 6 to 7), and little at reading distance (0.4 overall, 2.3 dysarthric).
+
+**Finding 29:** spectral subtraction helps only at low signal-to-noise ratio: 2.8 points at about 8 dB, nothing at about 16 dB, and the stronger setting hurts there. A high-pass filter does not help. Not shipped: this is simulated stationary noise, and no recording at a distance with known prompts exists yet.
+
+**Live chunk length, big6_q121, same 1043 clips, streaming + LM** (`--chunk`, left 128; big6 was trained on chunks 32 and 64 only). CI against chunk 32.
+
+| Chunk | all | control | dysarthric | sentence | word | CI |
+|---|---|---|---|---|---|---|
+| 16 = 0.64 s | 27.75 | 15.46 | 51.57 | 23.54 | 38.36 | |
+| 24 = 0.96 s | 25.98 | 15.97 | 45.39 | 22.15 | 35.63 | |
+| 32 = 1.28 s (shipped) | 23.87 | 12.94 | 45.06 | 20.19 | 33.16 | |
+| 48 = 1.92 s | 20.69 | 10.70 | 40.07 | 17.76 | 28.09 | −4.42..−2.06 |
+| 64 = 2.56 s | 19.77 | 9.64 | 39.41 | 16.47 | 28.09 | −5.17..−3.14 |
+| full utterance | 17.74 | 8.91 | 34.85 | 14.04 | 27.05 | |
+
+**Finding 30:** live text can gain 3 to 4 points by updating less often; shorter chunks than 32 lose more than the wait they save. On chip cost, chunks other than 32 are not yet measured.
+
+**Where the wait goes.** The two passes run one after the other, so slowing live text alone does not shorten the final pass. From the chip's profile (`docs/results/p4_bench_big2q121_full_2c.log` minus the streaming run) the front end is about 17 % of a full pass, and streaming has already computed it. `tasr_nemo_stream_keep` and `tasr_nemo_transcribe_from` start the pass after the kept rows; only rows computed from real audio before the stream was finished count, since finishing computes the last rows as if the audio stopped there. Host check (`tasr_cli --reuse`, 60 clips, each with a stream left running and a stream finished): logits differ by exactly 0 and the text is the same in all 120 runs; host CPU 139.5 → 105.8 s (finished), 108.4 s (not finished). Not yet confirmed with speech on the board; a press with only room noise took 6.0 s for 9.4 s of audio, not comparable with speech because the decoder has less to do.
+
+**The last words.** Text used to stop at the last whole chunk until the final pass ended. From 2 s of audio the firmware now finishes the stream first (at most one chunk of work) and shows it. Clip played at the board, 9.5 s of audio: all words on screen 0.16 s after release, final text 7.37 s after release (before the front-end reuse).
+
+**big8** (`train/runs/big8.cmd`, dysarthric audio share 38 %): engine, full + LM 17.33 (big6 17.74; CI −0.80..−0.07), dysarthric 35.43, chunk 32 23.26. The gain is one speaker: M05 49.40 → 45.81 (CI −5.44..−1.79); F03 and both controls do not change significantly. Float: LibriSpeech 4.08 → 4.24, UASpeech 66.25 → 67.51. Not deployed: big6 stays on the board and the mix stops here.
+
+**Finding 31:** the dysarthric share has stopped paying. Beyond 26 % the gain is on one test speaker, on familiar prompts, and unfamiliar material gets worse.
+
+**Reference point.** The Interspeech 2025 challenge winner (Takahashi et al.) fine-tuned Parakeet-TDT 1.1B, about 1.1 billion parameters and about 4 GB, on 290 h of real dysarthric speech, decoded with beam 40 on Test1 and reached 5.97 % on Test1 and 8.11 % on Test2; the baseline, Whisper large v2, reached 14.97 and 17.82. Off the shelf the same model scored 10.40 on Test1. Test sets differ from ours and are not public, so these numbers cannot be set against TORGO's.
+
+**Waveform simulator.** `train/dysim.py` simulates 14 conditions on a WORLD analysis (about 10 x real time per process on the training PC). Profiles are hand-set from clinical descriptions and not yet calibrated. Results follow in a later entry.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe
@@ -935,6 +998,7 @@ A paired bootstrap over prompts (1000 resamples) gives a 95 % interval of -0.54 
 13. Bit-exact kernels do not make transcripts identical across platforms: a one-in-a-million difference from `logf` grows to about 1 % in the logits through the dynamic int8 quantization, which can flip a marginal word (E12).
 14. Dysarthric speech was only 6.5 % of the training audio. Raising it to 26 % lowers WER on the device arithmetic, full context, from 19.5 to 17.7 % (dysarthric 41.6 to 36.6), the largest training gain since the 24-layer model, but it costs about 2.6 points on UASpeech, an unseen corpus (E13).
 15. 99 % of TORGO's test clips use prompts also in its training set, so TORGO scores describe new speakers on familiar prompts (E13).
+16. On the board's microphone, signal-to-noise ratio matters and level control does not. Measured noise costs 0.4 points at reading distance and 2.7 at about 16 dB; noise reduction helps only near 8 dB, in simulation (E14).
 
 ## 6. Threats to validity and open issues
 

@@ -949,6 +949,12 @@ static void rnnt_greedy(const tasr_nemo_t *m, nctx_t *C, const float *x, int T, 
 int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_decoder_t *dec, char *text, int maxlen,
                          float *logit_sink, int max_frames, int *n_frames)
 {
+    return tasr_nemo_transcribe_from(m, pcm, n, dec, text, maxlen, logit_sink, max_frames, n_frames, NULL, 0);
+}
+
+int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_decoder_t *dec, char *text, int maxlen,
+                              float *logit_sink, int max_frames, int *n_frames, const float *kept, int n_kept)
+{
     nsig_init();
     nexp_init();
     if (n < 2 * HOP) { if (maxlen) text[0] = 0; return 0; }
@@ -980,7 +986,9 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     }
     C.rmx = (float *)tasr_alloc(sizeof(float) * RB, 1);
     float *x = (float *)tasr_alloc(sizeof(float) * (size_t)T * d, 0);
-    // ---- striding conv subsampling, pipelined over output frames
+    if (n_kept > T) n_kept = T;
+    if (n_kept > 0) memcpy(x, kept, sizeof(float) * (size_t)n_kept * d);
+    // ---- striding conv subsampling, pipelined over output frames, from the first frame not kept
     {
         float *ring = (float *)tasr_alloc(sizeof(float) * 3 * sc * (f1 + 2), 0);  // conv0 rows (r % 3), padded
         // conv2 runs as one GEMM per C2B output frames (C2B * f2 <= RB patch rows), so its weights are fetched once per
@@ -993,8 +1001,8 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
         int nbat = 0;
         float *cmaxr = (float *)tasr_alloc(sizeof(float) * 3 * (f1 + 2), 1);  // per ring row: max over channels
         float *cmw = (float *)tasr_alloc(sizeof(float) * NW * (f1 + 2), 1);
-        int have = -1, nflat = 0, t_flat0 = 0;
-        for (int t2 = 0; t2 < T; t2++) {
+        int have = n_kept > 0 ? 2 * n_kept - 2 : -1, nflat = 0, t_flat0 = n_kept;
+        for (int t2 = n_kept; t2 < T; t2++) {
             for (int r = 2 * t2 - 1; r <= 2 * t2 + 1; r++) {  // conv0 output rows needed
                 if (r < 0 || r >= T1 || r <= have) continue;
                 NB(tc0);
@@ -1073,7 +1081,7 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
     tasr_free(F);
     tasr_free(xq_sub);
     const float xscale = sqrtf((float)d);
-    for (int i = 0; i < T * d; i++) x[i] *= xscale;
+    for (int i = n_kept * d; i < T * d; i++) x[i] *= xscale;  // kept rows are scaled already
     ndbg("sub", 0, x, (size_t)T * d);
     // ---- relative positional encodings (int8, shared by all layers before linear_pos)
     const int NP = 2 * T - 1;
@@ -1362,6 +1370,8 @@ struct tasr_nemo_stream {
     int8_t *xq_sub;
     int nbat, nflat, t_chunk;
     float *x;      // [C][d]
+    float *keep;   // optional: [keep_max][d] every encoder input row, for tasr_nemo_transcribe_from
+    int keep_max, keep_n, keep_safe;  // keep_safe: rows computed from real audio before finish (-1: not finished)
     // work
     nctx_t W;
     float *hb, *h2, *att, *prow, *squ, *sqv;
@@ -1694,6 +1704,11 @@ static void s_run_chunk(struct tasr_nemo_stream *s)
     for (int i = 0; i < s->nflat * m->d; i++) s->x[i] *= xscale;
     const int n = s->nflat;
     s->nflat = 0;
+    if (s->keep) {
+        const int k = n < s->keep_max - s->keep_n ? n : s->keep_max - s->keep_n;
+        memcpy(s->keep + (size_t)s->keep_n * m->d, s->x, sizeof(float) * (size_t)k * m->d);
+        s->keep_n += k;
+    }
     s_encode_chunk(s, n);
 }
 // advance the front end as far as the available audio allows (or to the end after finish)
@@ -1853,6 +1868,7 @@ void tasr_nemo_stream_reset(tasr_nemo_stream_t *s)
     s->mel_t = s->c0_next = s->t2_next = s->finished = 0;
     s->T0 = s->T1 = s->T = 0;
     s->nbat = s->nflat = s->t_chunk = s->kbase = s->nk = s->kview = 0;
+    s->keep_n = 0; s->keep_safe = -1;
     s->prev = -1; s->len = 0; s->frames = 0; s->text[0] = 0;
     memset(s->gh, 0, sizeof(float) * m->nl * (2 * s->halo + s->C) * m->d);
     memset(s->vt, 0, (size_t)m->nl * m->h * m->dh * s->Lcp);
@@ -1898,9 +1914,27 @@ int tasr_nemo_stream_text(tasr_nemo_stream_t *s, char *text, int maxlen)
     return s->frames;
 }
 
+int tasr_nemo_stream_keep(tasr_nemo_stream_t *s, int max_samples)
+{
+    const int rows = max_samples / (4 * HOP) + 2;
+    if (s->keep) tasr_free(s->keep);
+    s->keep = (float *)tasr_alloc(sizeof(float) * (size_t)rows * s->m->d, 0);
+    s->keep_max = s->keep ? rows : 0;
+    s->keep_n = 0;
+    return s->keep != NULL;
+}
+
+const float *tasr_nemo_stream_kept(const tasr_nemo_stream_t *s, int *n_rows)
+{
+    // finish computes the last rows as if the audio stopped there: a longer recording of the same audio has other rows at that point
+    *n_rows = s->keep_safe >= 0 && s->keep_safe < s->keep_n ? s->keep_safe : s->keep_n;
+    return s->keep;
+}
+
 int tasr_nemo_stream_finish(tasr_nemo_stream_t *s, char *text, int maxlen)
 {
     if (!s->finished) {
+        s->keep_safe = s->t2_next;
         if (s->n_samp < 2 * HOP) {  // too short for the model: no frames (like tasr_nemo_transcribe)
             s->finished = 1;
             if (maxlen) text[0] = 0;
@@ -1923,7 +1957,7 @@ void tasr_nemo_stream_free(tasr_nemo_stream_t *s)
     if (!s) return;
     void *p[] = {s->p8, s->sp, s->k8, s->sk, s->vt, s->sv, s->gh, s->mel, s->c0ring, s->cmaxr, s->cmw, s->col, s->c2out,
                  s->fr, s->xq_sub, s->xs_sub, s->x, s->W.xq, s->W.xs, s->hb, s->h2, s->att, s->prow, s->qu, s->qv,
-                 s->squ, s->sqv, s->lg, s->lp, s->W.rmx};
+                 s->squ, s->sqv, s->lg, s->lp, s->W.rmx, s->keep};
     for (size_t i = 0; i < sizeof(p) / sizeof(p[0]); i++) if (p[i]) tasr_free(p[i]);
     for (int w = 0; w < NW; w++) {
         if (s->W.wtmp[w]) tasr_free(s->W.wtmp[w]);

@@ -3,6 +3,7 @@
 //                 [--stream] file1.wav [file2.wav ...]
 // .tasr = streaming tinyasr model, .tnm = NeMo Conformer-CTC small (utterance mode; --stream: the streaming engine with
 // the chunk and left context stored in the model, fed 20 ms at a time as on the device)
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,10 +67,11 @@ int main(int argc, char **argv)
         return 1;
     }
     const char *lm_path = NULL;
-    int chunk = 32, left = 4, first = 2, beam = 4, stream = 0, nchunk = 0, nleft = 0;
+    int chunk = 32, left = 4, first = 2, beam = 4, stream = 0, nchunk = 0, nleft = 0, reuse = 0;
     float lw = -1.f, tb = -1.f;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--stream")) { stream = 1; first = i + 1; }
+        if (!strcmp(argv[i], "--reuse")) { stream = reuse = 1; first = i + 1; }  // check tasr_nemo_transcribe_from against tasr_nemo_transcribe (the push-to-talk sequence)
         if (!strcmp(argv[i], "--nchunk") && i + 1 < argc) { nchunk = atoi(argv[++i]); first = i + 1; }  // .tnm streaming; 0 = stored in the model
         if (!strcmp(argv[i], "--nleft") && i + 1 < argc) { nleft = atoi(argv[++i]); first = i + 1; }
         if (!strcmp(argv[i], "--lm") && i + 1 < argc) { lm_path = argv[++i]; first = i + 1; }
@@ -111,6 +113,35 @@ int main(int argc, char **argv)
         int16_t *pcm = read_wav(argv[i], &ns);
         if (!pcm) { fprintf(stderr, "skip %s\n", argv[i]); continue; }
         clock_t t0 = clock();
+        if (ns_ && reuse) {  // two sequences, each with 0.5 s of silence after the audio: release after a stream that was finished, and one that was not
+            static char text2[16384];
+            enum { PAD = 8000, MAXF = 4000 };
+            static float a[MAXF * 1025], b[MAXF * 1025];
+            int16_t *p2 = (int16_t *)calloc((size_t)ns + PAD, sizeof(int16_t));
+            memcpy(p2, pcm, sizeof(int16_t) * (size_t)ns);
+            int fa = 0, fb = 0, rows = 0;
+            tasr_nemo_stream_keep(ns_, 16000 * 120);
+            clock_t ta = clock();
+            tasr_nemo_transcribe(nm, p2, ns + PAD, dec, text, sizeof(text), a, MAXF, &fa);
+            const double ca = (double)(clock() - ta) / CLOCKS_PER_SEC;
+            double cb = 0.;
+            for (int fin = 0; fin < 2; fin++) {
+                tasr_nemo_stream_reset(ns_);
+                for (int j = 0; j < ns; j += 320) tasr_nemo_stream_feed(ns_, pcm + j, ns - j < 320 ? ns - j : 320);
+                if (fin) tasr_nemo_stream_finish(ns_, text2, sizeof(text2));
+                const float *kx = tasr_nemo_stream_kept(ns_, &rows);
+                ta = clock();
+                tasr_nemo_transcribe_from(nm, p2, ns + PAD, dec, text2, sizeof(text2), b, MAXF, &fb, kx, rows);
+                cb = (double)(clock() - ta) / CLOCKS_PER_SEC;
+                float worst = 0.f;
+                if (fa == fb) for (long k = 0; k < (long)fa * 1025; k++) { const float e = fabsf(a[k] - b[k]); worst = e > worst ? e : worst; }
+                printf("REUSE %s finished %d: rows %d of %d, frames %d %d, largest logit difference %g, text %s, CPU %.3f -> %.3f s\n", argv[i], fin, rows, fa, fa, fb, worst,
+                       strcmp(text, text2) ? "DIFFERS" : "same", ca, cb);
+            }
+            free(p2);
+            free(pcm);
+            continue;
+        }
         if (ns_) {
             tasr_nemo_stream_reset(ns_);
             for (int j = 0; j < ns; j += 320) tasr_nemo_stream_feed(ns_, pcm + j, ns - j < 320 ? ns - j : 320);

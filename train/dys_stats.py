@@ -71,7 +71,10 @@ def main():
         random.Random(0).shuffle(items)
         variants = [("", None)] + [(f"+sim_{v}", v) for v in sims.get(name, [])]
         for it in items[: a.n]:
-            w, _ = sf.read(it["wav"], dtype="float32")
+            if "pack" in it:  # simulated clips exist only in a pack
+                w = np.array(np.memmap(it["pack"], dtype="<i2", mode="r")[it["off"]: it["off"] + it["n"]], dtype=np.float32) / 32768
+            else:
+                w, _ = sf.read(it["wav"], dtype="float32")
             if w.ndim > 1:
                 w = w.mean(1)
             with torch.no_grad():
@@ -83,7 +86,7 @@ def main():
                     x = distort_severity(mel, sev, random.Random(hash((it["wav"], sev)) & 0xFFFFFFFF))
                 r = measure(x, it["text"])
                 if r:
-                    r.update(set=name + suffix, group=it.get("group", "-"), speaker=it.get("speaker", "-"),
+                    r.update(set=name + suffix + (":" + it["condition"] if "condition" in it else ""), group=it.get("group", "-"), speaker=it.get("speaker", "-"),
                              kind=it.get("kind", "-"))
                     rows.append(r)
     keys = ("rate", "pause", "flux", "hilo", "trem")

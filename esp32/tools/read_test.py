@@ -120,6 +120,7 @@ def main():
         for k, (kind, prompt) in enumerate(prompts):
             print(f"[{k + 1}/{len(prompts)}]  {prompt.upper()}", flush=True)
             final, partial, pcm, total, peak, skip = None, "", b"", None, -120.0, False
+            released, partial_at = None, None
             for e in ev:
                 if e is None:
                     c = key_pressed()
@@ -132,8 +133,10 @@ def main():
                 t = e.get("type")
                 if t == "level":
                     peak = max(peak, e["db"])
+                elif t == "button" and not e.get("down"):
+                    released = time.time()
                 elif t == "partial":
-                    partial = e["text"]
+                    partial, partial_at = e["text"], time.time()
                 elif t == "final":
                     final = e
                     print(f"    heard: {e['text']}   ({e['delay_ms'] / 1000:.1f} s after release, peak {peak:.0f} dBFS)", flush=True)
@@ -152,7 +155,8 @@ def main():
             x = struct.unpack(f"<{len(pcm) // 2}h", pcm)
             rms = math.sqrt(sum(v * v for v in x) / max(1, len(x))) / 32768
             rows.append({"wav": name, "prompt": prompt, "kind": kind, "speaker": a.speaker, "distance": a.distance, "final": final["text"], "partial": partial,
-                         "delay_ms": final["delay_ms"], "audio_s": final["audio_s"], "peak_dbfs": peak, "rms_dbfs": 20 * math.log10(max(rms, 1e-6))})
+                         "delay_ms": final["delay_ms"], "audio_s": final["audio_s"], "peak_dbfs": peak, "rms_dbfs": 20 * math.log10(max(rms, 1e-6)),
+                         "last_partial_after_release_s": round(partial_at - released, 2) if released and partial_at else None})
             with open(os.path.join(out, "clips.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(rows[-1]) + "\n")
     except KeyboardInterrupt:
