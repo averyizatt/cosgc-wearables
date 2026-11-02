@@ -1017,6 +1017,44 @@ WER, big6_q121 + LM, 1947 clips:
 - `train/runs/big9.cmd` trains on big6's mix plus this set, with the real dysarthric share held near big6's and the same compute.
 - It is judged on TORGO test (held-out speakers), UASpeech and LibriSpeech. On TORGO test, 99 % of the prompts are also in training (E13), so UASpeech is the check on unfamiliar words.
 
+The set came out at 166 h of audio (28376 clips) from the 100 source hours. Slowing makes 65 % of the clips longer than the trainer's usual 20 s limit, so big9 uses `--max_dur 32`, which keeps 120 h (24331 clips, 86 %, every condition represented). It also takes big7's batches: 6000 steps of 100 s, the same audio as big6.
+
+**big7** (`train/runs/big7.cmd`: big6 plus the older mel-level simulation, `simdys.py`, on 30 % of LibriSpeech clips, 6000 steps of 100 s).
+
+Float, greedy, against big6:
+
+| Set | big6 | big7 |
+|---|---|---|
+| TORGO test | 19.18 | 18.46 |
+| UASpeech | 66.25 | 65.46 |
+| LibriSpeech test-clean | 4.08 | 4.19 |
+
+Engine (int8, LM), TORGO test, paired bootstrap against big6:
+
+| | big6 | big7 | CI of the difference |
+|---|---|---|---|
+| full context | 17.74 | 17.03 | −1.08..−0.35 |
+| chunk 32 | 23.86 | 23.31 | −0.99..−0.07 |
+| M05 (severe), full | 49.40 | 46.14 | −5.06..−1.44 |
+| FC03 (control), full | 8.51 | 7.74 | −1.23..−0.31 |
+
+F03 and MC04 do not change.
+
+**Finding 33:** at 24 layers, the older mel-level simulation now helps slightly, where at 16 layers (E4) it did not. Unlike a larger real dysarthric share (big8, Finding 31), it does not cost UASpeech. big7 replaces big6 on the board. It was flashed with `flash_p4.py --only model` and verified; it boots and loads (20381216 bytes into PSRAM in 1.9 s, ready 3.2 s after boot). Board text was not checked with speech.
+
+**Round 3** (`sound_errors` in `dysim.py`): wrong sounds rather than weak ones. For the eight dysarthria types and apraxia, three errors were added:
+- consonant runs left out with probability s × U(0.05, 0.25);
+- fricatives moved in place (envelope scaled by 0.6–1.6) with probability s × U(0.1, 0.45);
+- weak voiced stretches made voiceless with probability s × U(0.1, 0.4).
+
+Same 1947 test-clean clips:
+- WER, full context: 13.3 → 15.5 % overall; mild 8.3, moderate 16.3, severe 24.1.
+- WER, chunk 32: 21.9 % overall, severe 33.3.
+- Flux for ALS and CP rose to × 0.88–0.89, close to the target.
+- Ataxic speech is still brighter than the source.
+
+**Finding 34:** sound errors move simulated speech toward real dysarthria on both the statistics and the model's errors, but severe simulated speech still costs about half what real severe speech costs. The pilot set (sim100) was generated with round 2, before these errors existed.
+
 ## 5. Findings so far, for the paper
 
 1. The shipped on-device model fails on dysarthric speech: 57 % and 90 % streaming WER for a moderate and a severe

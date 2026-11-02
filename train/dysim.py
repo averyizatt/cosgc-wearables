@@ -160,6 +160,35 @@ def apply_tilt(sp, db_at_nyquist):
     return sp * 10 ** (np.linspace(0, db_at_nyquist, sp.shape[1]) / 10)[None]
 
 
+def runs(mask):
+    """(start, end) of each run of True frames."""
+    d = np.diff(np.concatenate(([0], mask.astype(np.int8), [0])))
+    return list(zip(np.where(d == 1)[0], np.where(d == -1)[0]))
+
+
+def sound_errors(f0, sp, ap, seg, rng, omit, swap, devoice):
+    """Wrong sounds rather than weak ones (E15, Finding 32): consonants left out, fricatives moved to another place ("s" toward "sh" or "f"),
+    voiced consonants said voiceless. Returns new arrays and the frames kept."""
+    sp, ap, f0 = sp.copy(), ap.copy(), f0.copy()
+    if swap > 0:
+        for a, b in runs(seg.fric):
+            if rng.random() < swap:
+                sp[a:b] = warp_envelope(sp[a:b], rng.choice((0.6, 0.75, 1.35, 1.6)))
+    if devoice > 0 and seg.voiced.any():  # weak voiced stretches are mostly voiced consonants and nasals; vowels are the loud ones
+        peak = np.quantile(seg.e[seg.voiced], 0.9)
+        for a, b in runs(seg.voiced & (seg.e < peak - 12)):
+            if b - a <= 30 and rng.random() < devoice:
+                f0[a:b] = 0.0
+                ap[a:b] = 1.0
+                sp[a:b] *= 0.5
+    keep = np.ones(len(f0), bool)
+    if omit > 0:
+        for a, b in runs(seg.cons):
+            if b - a <= 40 and rng.random() < omit:
+                keep[a:b] = False
+    return f0, sp, ap, np.where(keep)[0]
+
+
 def fluency(f0, sp, ap, seg, rng, rep, block, prolong):
     """Stuttering-like events at syllable onsets: part-syllable repetitions, silent blocks, prolongations. The transcript keeps the intended words."""
     idx, prev = [], 0
@@ -205,6 +234,10 @@ def profile(cond, s, rng):
         p["tilt"] = min(p["tilt"], 0.0) - s * rng.uniform(4, 12)
         p["strain"] = min(p["strain"], 4.0)
         p["blur"] = min(p["blur"], 0.35)
+        # round 3: sound errors, which no amount of weakening produced; consonant errors are the most frequent kind in dysarthric speech
+        p.update(omit=U(rng, .05, .25, s), swap=U(rng, .1, .45, s), devoice=U(rng, .1, .4, s))
+    elif cond == "apraxia":
+        p.update(omit=U(rng, .03, .15, s), swap=U(rng, .1, .4, s), devoice=U(rng, .05, .25, s))
     p["slow"] = max(p["slow"], 0.4)  # severities above 1 (round 2: severe sims cost the model 21 %, real severe speakers about 45-50 %) must not stretch speech past 2.5 x
     return p
 
@@ -212,7 +245,7 @@ def profile(cond, s, rng):
 def _profile(cond, s, rng):
     g = lambda lo, hi: U(rng, lo, hi, s)
     p = dict(slow=1.0, uneven=0.0, vowel_long=1.0, rushes=0.0, pause=0.0, mono=0.0, f0_st=0.0, jitter=0.0, tremor=0.0, breaks=0.0, stops=0.0, weak=0.0, lenite=0.0, vowel=0.0, blur=0.0,
-             nasal=0.0, breathy=0.0, strain=0.0, rough=0.0, tilt=0.0, decay=0.0, am=0.0, rep=0.0, block=0.0, prolong=0.0, source="")
+             nasal=0.0, breathy=0.0, strain=0.0, rough=0.0, tilt=0.0, decay=0.0, am=0.0, rep=0.0, block=0.0, prolong=0.0, source="", omit=0.0, swap=0.0, devoice=0.0)
     slow = lambda lo, hi: 1 - s * rng.uniform(lo, hi)
     if cond == "flaccid":  # weak muscles: breathy, nasal, imprecise (bulbar palsy, myasthenia, part of ALS)
         p.update(slow=slow(.15, .4), breathy=g(.3, .9), nasal=g(.5, 1.), weak=g(8, 18), lenite=g(.4, 1.), vowel=g(.3, .6), mono=g(.2, .6), tilt=g(-10, -3), decay=g(1, 6))
@@ -277,6 +310,11 @@ def simulate(x, cond, s, sp_rng, rng):
     if p["blur"] > 0:  # transitions between sounds slow down; mildly: real dysarthric speech is about as rough frame to frame as typical speech (E5)
         ls = np.log(sp + 1e-16)
         sp = np.exp((1 - p["blur"]) * ls + p["blur"] * gaussian_filter1d(ls, 2, axis=0))
+    if p["omit"] or p["swap"] or p["devoice"]:
+        f0, sp, ap, k = sound_errors(f0, sp, ap, seg, rng, p["omit"], p["swap"], p["devoice"])
+        if len(k) < len(f0):
+            f0, sp, ap = f0[k], sp[k], ap[k]
+            seg = Seg(f0, sp)
 
     # --- resonance and voice source
     sp = nasalize(sp, seg.voiced, min(1.0, p["nasal"]), sp_rng)
