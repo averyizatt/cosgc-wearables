@@ -93,6 +93,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | C10 | The model's own token posteriors flag errors: AUC 0.894; utterances marked "sure" (54 %) are 95 % fully right, "probably wrong" (24 %) 27 %. | E17 (F36) | solid on TORGO; device microphone pending |
 | C11 | On the board's microphone, signal-to-noise ratio matters and level control does not; noise reduction helps only near 8 dB SNR. | E14 (F28, F29) | tentative (simulated noise) |
 | C12 | Bit-exact kernels do not guarantee identical transcripts across platforms: dynamic int8 quantization amplifies 1e-6 input differences to about 1 % in the logits. | E12 (F24) | solid |
+| C13 | A user's short phrase list, scored by CTC on the device, raises fully right utterances for dysarthric speakers from 50 % to 84 % (25 phrases) or 89 % (10), with 5 % of off-list speech wrongly matched. | E18 (F37) | tentative (threshold fitted on the test clips; TORGO prompts) |
 
 **Negative results worth reporting:**
 - Frame-level in-place distillation damaged an already-streaming model (E2).

@@ -107,7 +107,30 @@ def simulator():
     save(fig, "fig_simulator")
 
 
+def phrases():
+    """Figure 5: phrase mode, big7 + LM, TORGO test, share of on-list utterances fully right on the screen, by list size. E18."""
+    size = [10, 25, 50, 100, 398]
+    dys = [88.5, 83.7, 79.0, 73.3, 58.3]
+    ctl = [97.1, 96.2, 95.3, 94.3, 89.3]
+    fig, ax = plt.subplots(figsize=(4.8, 3.1))
+    for y, c, lab, free in ((ctl, BLUE, "control speakers", 83.5), (dys, ORANGE, "dysarthric speakers", 49.7)):
+        ax.plot(range(5), y, color=c, lw=2, marker="o", ms=6, mec=SURF, mew=1.5, label=lab)
+        ax.axhline(free, color=c, lw=1, ls=":")
+        ax.annotate(f"free decoding: {free:.0f} %", (4.2, free), xytext=(0, 3), textcoords="offset points", va="bottom", fontsize=7, color=INK2)
+        ax.annotate(f"{y[0]:.0f}", (0, y[0]), xytext=(-7, 0), textcoords="offset points", ha="right", va="center", fontsize=8, color=INK2)
+    ax.set_xticks(range(5), [str(s) for s in size])
+    ax.set_xlabel("phrases on the list")
+    ax.set_xlim(-0.5, 5.6)
+    ax.set_ylim(0, 105)
+    ax.set_ylabel("utterances fully right, %")
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="lower left", fontsize=7.5)
+    ax.set_title("Phrase mode (5 % of off-list speech wrongly matched)", fontsize=9, loc="left")
+    save(fig, "fig_phrases")
+
+
 if __name__ == "__main__":
     ladder()
     confidence()
     simulator()
+    phrases()

@@ -1149,6 +1149,41 @@ Control speakers' clips are 68 % sure and 12 % probably wrong; dysarthric speake
 
 **Finding 36:** the model knows fairly well when it is wrong. Half of all utterances can be shown as sure with 95 % of them fully right, and a quarter flagged as probably wrong, where half the words are wrong. For a user this is the difference between trusting the screen and being misled by it. The thresholds come from TORGO test and should be checked on new speakers and on the device's own microphone.
 
+### E18. Phrase mode: a user's own list of phrases (2026-11-02)
+
+**Question:** with a short list of phrases the user cares about ("I need water", names, places), how often does the device show the right
+one, and how often does it put a list phrase over speech that was not on the list? This is a vocabulary list the user keeps, not a model
+trained on the user.
+
+**Method.**
+- The engine (`tasr_phrase.c`) computes, during the full-context pass, each phrase's CTC log-likelihood (the forward algorithm over all alignments, from the same log posteriors the beam decoder gets). It also keeps the free decoding path's score, the best token at every frame.
+- A phrase is shown when its score per frame is within a threshold of free decoding's; otherwise the free transcript is shown.
+- Lists are tokenized off the device with the model's SentencePiece model (`esp32/tools/make_phrases.py`).
+- Test: big7_q121 + LM, TORGO test, 5214 clips. Half of the 748 distinct test prompts go on the list (398, chosen by a hash of the text; `esp32/host/phrase_eval.py`). Clips of the other half stand for speech the user did not put on the list.
+- For a list of N, each clip is scored against N − 1 random list phrases plus its own when it is on the list. The threshold is set so that 5 % of off-list utterances are replaced by a phrase, which is then always wrong.
+
+**Results** (share of on-list utterances whose final screen is fully right):
+
+| List size | all | control | dysarthric | best phrase right (dysarthric) | threshold |
+|---|---|---|---|---|---|
+| free decoding only | 72.6 | 83.5 | 49.7 | | |
+| 10 | 94.4 | 97.1 | **88.5** | 93.8 | −0.163 |
+| 25 | 92.2 | 96.2 | **83.7** | 90.6 | −0.119 |
+| 50 | 90.1 | 95.3 | **79.0** | 89.0 | −0.089 |
+| 100 | 87.5 | 94.3 | **73.3** | 86.3 | −0.067 |
+| 398 | 79.3 | 89.3 | 58.3 | 78.2 | −0.018 |
+
+Off-list utterances: 5.0 % replaced by a phrase at every list size (by construction); free decoding is fully right on 72.1 % of them.
+
+**Caveats:**
+- The threshold was set on the same off-list clips it is reported on; a device needs one threshold per list size, fitted on other data.
+- TORGO's prompts are mostly single words (474 of 748), and longer phrases should be easier to tell apart.
+- All of these prompts were seen in training (E13). A user's own phrases may not have been; the scoring itself needs no training.
+
+**Cost:** for each frame, about 2 operations per phrase token. A 100-phrase list of about 5 tokens each is about 1000 operations per 40 ms frame, negligible next to the encoder.
+
+**Finding 37:** a short phrase list turns the device from unreliable to usable for dysarthric speakers. With 25 phrases, 84 % of utterances come out fully right, against 50 % for free decoding, at a cost of 5 % of off-list speech being wrongly matched. The gain shrinks as the list grows (58 % at about 400 phrases), so the feature suits a core vocabulary rather than open dictation. Not yet in the firmware's interface.
+
 ## 5. Findings so far, for the paper
 
 The list below covers E1–E14. Findings 17–36 are numbered in their entries. The consolidated claims the paper will make, each with its
