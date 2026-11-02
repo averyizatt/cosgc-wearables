@@ -965,7 +965,57 @@ Chunk 32 at −42 dBFS: 27.01 (control 14.45, dysarthric 51.36), against 23.87 c
 
 **Reference point.** The Interspeech 2025 challenge winner (Takahashi et al.) fine-tuned Parakeet-TDT 1.1B, about 1.1 billion parameters and about 4 GB, on 290 h of real dysarthric speech, decoded with beam 40 on Test1 and reached 5.97 % on Test1 and 8.11 % on Test2; the baseline, Whisper large v2, reached 14.97 and 17.82. Off the shelf the same model scored 10.40 on Test1. Test sets differ from ours and are not public, so these numbers cannot be set against TORGO's.
 
-**Waveform simulator.** `train/dysim.py` simulates 14 conditions on a WORLD analysis (about 10 x real time per process on the training PC). Profiles are hand-set from clinical descriptions and not yet calibrated. Results follow in a later entry.
+**Waveform simulator.** `train/dysim.py` simulates 14 conditions on a WORLD analysis (about 10 x real time per process on the training PC). Profiles are hand-set from clinical descriptions and not yet calibrated. Results follow in E15.
+
+### E15. Calibrating the waveform simulator, and a 100-hour pilot set (2026-11-02)
+
+**Method.** Each round regenerates 4 h of LibriSpeech test-clean (1947 clips, seed 11, severity uniform 0.2–1.0, one condition per simulated speaker), measures it with `train/dys_stats.py` against the E5 targets (dysarthric TORGO speakers against controls), and scores it with big6_q121 + LM in the engine, full context and chunk 32. Test-clean is never used for training, and the clean set scores about 4 % with the same model.
+
+Targets from E5, as a ratio or difference against typical speech: speaking rate × 0.70–0.94, pause share +0.12 to +0.18, spectral flux × 0.93–1.02, high/low energy 1 to 14 dB lower, syllable rhythm strength × 0.43–0.69.
+
+**Round 1** (the profiles as first written). Rate and rhythm were in range. Pauses were short of the target (+0.01 to +0.06). Flux was too low for the slowest conditions (ALS and CP about × 0.67): interpolated frames are smoother than real slow speech. Spastic and ataxic speech came out brighter than the source, not duller. WER, full context: 10.7 % overall (mild 5.8, moderate 10.7, severe 16.9). Flaccid, unilateral upper motor neuron, dysphonia, electrolarynx and whisper scored under 7 % even at severe, so those profiles were too weak.
+
+**Round 2 changes:**
+- Frame-level noise on interpolated spectra.
+- Milder vowel blur and transition blur.
+- For the eight dysarthria types, a pause share of at least s × U(0.3, 0.8) and a further s × U(4, 12) dB high-frequency loss.
+- Stronger flaccid and unilateral profiles.
+
+Measured (lsclean = the unprocessed clips):
+
+| Set | rate | pause | flux | hi/lo dB | rhythm |
+|---|---|---|---|---|---|
+| lsclean | 15.82 | 0.156 | 4.055 | −2.90 | 0.340 |
+| ALS | 10.74 | 0.280 | 3.299 | −11.29 | 0.133 |
+| CP | 10.75 | 0.335 | 3.330 | −9.74 | 0.123 |
+| spastic | 12.96 | 0.323 | 3.588 | −3.20 | 0.167 |
+| ataxic | 14.64 | 0.263 | 3.926 | +0.35 | 0.193 |
+| flaccid | 13.73 | 0.293 | 3.669 | −12.50 | 0.162 |
+| hypokinetic | 15.62 | 0.323 | 3.971 | −8.03 | 0.230 |
+| hyperkinetic | 14.03 | 0.372 | 3.846 | −5.72 | 0.138 |
+| unilateral UMN | 12.77 | 0.321 | 3.690 | −7.96 | 0.170 |
+
+Pauses are now in range or above it (+0.11 to +0.22). Most types are duller, but ataxic speech is still brighter. Flux has improved but is still low for ALS and CP (× 0.81). ALS and CP are slightly too slow (× 0.68) and too even (× 0.36–0.39).
+
+WER, big6_q121 + LM, 1947 clips:
+
+| | full | chunk 32 |
+|---|---|---|
+| all | 13.3 | 19.6 |
+| mild / moderate / severe | 7.1 / 13.6 / 21.0 | 11.2 / 19.7 / 30.4 |
+| CP | 26.9 | 38.5 |
+| hyperkinetic | 21.3 | 31.0 |
+| ALS | 18.2 | 27.1 |
+| spastic, hypokinetic, uumn, stutter, flaccid | 12.8–13.9 | 16.9–21.5 |
+| apraxia, ataxic, esophageal | 10.1–10.7 | 15.8–17.1 |
+| whisper, electrolarynx, dysphonia | 4.3–6.7 | 6.1–10.4 |
+
+**Finding 32:** a signal-level simulator can match real dysarthric speech on rate, pausing, rhythm and spectral tilt, but at severity 1 it costs our model about 21 %. The real severe test speaker costs about 45–50 %. What is missing is probably the articulation itself: wrong or omitted sounds rather than weakened ones, which a vocoder that keeps the source phones cannot produce. Voice-source conditions (whisper, electrolarynx, dysphonia) barely trouble a model trained with noise augmentation.
+
+**Pilot set.** Rather than calibrate further on statistics, the pilot asks the question that matters: does the simulated audio help on real speakers?
+- `dysim.py gen` on LibriSpeech 100, 100 source hours, seed 21, severity 0.2–1.4. Above 1, the speaking rate is held at no less than 0.4 × and retime noise is 0.8.
+- `train/runs/big9.cmd` trains on big6's mix plus this set, with the real dysarthric share held near big6's and the same compute.
+- It is judged on TORGO test (held-out speakers), UASpeech and LibriSpeech. On TORGO test, 99 % of the prompts are also in training (E13), so UASpeech is the check on unfamiliar words.
 
 ## 5. Findings so far, for the paper
 

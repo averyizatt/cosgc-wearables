@@ -78,7 +78,8 @@ def retime(f0, sp, ap, pos):
     i = np.minimum(pos.astype(int), len(f0) - 2) if len(f0) > 1 else np.zeros(len(pos), int)
     w = (pos - i)[:, None]
     ls = np.log(sp + 1e-16)
-    out_sp = np.exp(ls[i] * (1 - w) + ls[i + 1] * w) if len(f0) > 1 else sp[i]
+    # interpolated frames are smoother than real slow speech, which keeps its frame-to-frame variation (E5): put it back
+    out_sp = np.exp(ls[i] * (1 - w) + ls[i + 1] * w + 0.8 * np.random.default_rng(len(pos)).standard_normal(w.shape) * (4 * w * (1 - w))) if len(f0) > 1 else sp[i]
     out_ap = ap[i] * (1 - w) + ap[i + 1] * w if len(f0) > 1 else ap[i]
     near = np.round(pos).astype(int)
     return f0[near], out_sp, out_ap
@@ -134,7 +135,7 @@ def centralize(sp, voiced, amount):
     mean = ls[voiced].mean(0, keepdims=True)
     out = ls.copy()
     out[voiced] = (1 - amount) * ls[voiced] + amount * mean
-    out[voiced] = gaussian_filter1d(out[voiced], 1 + 5 * amount, axis=1)
+    out[voiced] = gaussian_filter1d(out[voiced], 1 + 2 * amount, axis=1)
     return np.exp(out)
 
 
@@ -193,13 +194,28 @@ def U(rng, lo, hi, s):
 # mono (0 keep pitch movement, 1 flat), f0_st (semitones), jitter (cents), tremor (depth, semitones), breaks (per second), stops (voice stoppages per second),
 # weak (consonant attenuation, dB), lenite (bursts softened), vowel (centralization), blur (transitions smeared over time), nasal, breathy, strain (dB tilt up),
 # rough (period doubling), tilt (dB at Nyquist), decay (dB loudness loss over the clip), am (loudness tremor depth), fast_fade, rep/block/prolong (per syllable).
+DYSARTHRIA = ("flaccid", "spastic", "ataxic", "hypokinetic", "hyperkinetic", "uumn", "als", "cp")
+
+
 def profile(cond, s, rng):
+    p = _profile(cond, s, rng)
+    if cond in DYSARTHRIA:  # calibration round 2 (E15): TORGO's dysarthric speakers pause 12-18 % of the time more than controls and have
+        # 1-14 dB weaker high frequencies; round 1 gave +1 to +6 % pauses and some conditions brighter, not duller
+        p["pause"] = max(p["pause"], s * rng.uniform(0.3, 0.8))
+        p["tilt"] = min(p["tilt"], 0.0) - s * rng.uniform(4, 12)
+        p["strain"] = min(p["strain"], 4.0)
+        p["blur"] = min(p["blur"], 0.35)
+    p["slow"] = max(p["slow"], 0.4)  # severities above 1 (round 2: severe sims cost the model 21 %, real severe speakers about 45-50 %) must not stretch speech past 2.5 x
+    return p
+
+
+def _profile(cond, s, rng):
     g = lambda lo, hi: U(rng, lo, hi, s)
     p = dict(slow=1.0, uneven=0.0, vowel_long=1.0, rushes=0.0, pause=0.0, mono=0.0, f0_st=0.0, jitter=0.0, tremor=0.0, breaks=0.0, stops=0.0, weak=0.0, lenite=0.0, vowel=0.0, blur=0.0,
              nasal=0.0, breathy=0.0, strain=0.0, rough=0.0, tilt=0.0, decay=0.0, am=0.0, rep=0.0, block=0.0, prolong=0.0, source="")
     slow = lambda lo, hi: 1 - s * rng.uniform(lo, hi)
     if cond == "flaccid":  # weak muscles: breathy, nasal, imprecise (bulbar palsy, myasthenia, part of ALS)
-        p.update(slow=slow(.1, .35), breathy=g(.3, .9), nasal=g(.3, 1.), weak=g(4, 14), lenite=g(.3, .9), vowel=g(.1, .4), mono=g(.2, .6), tilt=g(-10, -3), decay=g(1, 6))
+        p.update(slow=slow(.15, .4), breathy=g(.3, .9), nasal=g(.5, 1.), weak=g(8, 18), lenite=g(.4, 1.), vowel=g(.3, .6), mono=g(.2, .6), tilt=g(-10, -3), decay=g(1, 6))
     elif cond == "spastic":  # slow, strained, low pitch, reduced stress (bilateral stroke, part of ALS and cerebral palsy)
         p.update(slow=slow(.25, .6), uneven=g(.05, .2), strain=g(3, 10), f0_st=g(-5, -1), mono=g(.4, .85), weak=g(5, 14), lenite=g(.2, .7), vowel=g(.2, .5), blur=g(.2, .7), pause=g(.05, .25), rough=g(0, .4))
     elif cond == "ataxic":  # irregular timing, prolonged sounds, excess equal stress (cerebellar, MS)
@@ -209,7 +225,7 @@ def profile(cond, s, rng):
     elif cond == "hyperkinetic":  # Huntington's, dystonia: unpredictable rate and loudness, sudden stoppages
         p.update(slow=slow(.05, .35), uneven=g(.2, .6), rushes=g(.05, .3), stops=g(.1, .6), am=g(.2, .6), pause=g(.1, .4), weak=g(3, 10), lenite=g(.1, .5), vowel=g(.1, .4), strain=g(0, 5), breaks=g(0, .6))
     elif cond == "uumn":  # one-sided stroke: mild to moderate imprecise articulation, some slowness and harshness
-        p.update(slow=slow(.1, .35), weak=g(4, 12), lenite=g(.2, .7), vowel=g(.1, .35), rough=g(0, .3), strain=g(0, 4), blur=g(.1, .4))
+        p.update(slow=slow(.15, .4), weak=g(6, 16), lenite=g(.3, .8), vowel=g(.2, .5), rough=g(0, .3), strain=g(0, 4), blur=g(.1, .4))
     elif cond == "als":  # mixed flaccid and spastic
         p.update(slow=slow(.3, .65), uneven=g(.05, .25), nasal=g(.3, 1.), breathy=g(.1, .5), strain=g(1, 6), mono=g(.3, .8), weak=g(6, 16), lenite=g(.3, .9), vowel=g(.3, .6), blur=g(.2, .6), pause=g(.1, .35), tilt=g(-12, -3))
     elif cond == "cp":  # cerebral palsy: mostly spastic, often with irregular movement
@@ -258,9 +274,9 @@ def simulate(x, cond, s, sp_rng, rng):
             if rng.random() < p["lenite"]:
                 sp[t] *= 0.25
                 ap[t] = 1.0
-    if p["blur"] > 0:  # transitions between sounds slow down
+    if p["blur"] > 0:  # transitions between sounds slow down; mildly: real dysarthric speech is about as rough frame to frame as typical speech (E5)
         ls = np.log(sp + 1e-16)
-        sp = np.exp(gaussian_filter1d(ls, 1 + 6 * p["blur"], axis=0))
+        sp = np.exp((1 - p["blur"]) * ls + p["blur"] * gaussian_filter1d(ls, 2, axis=0))
 
     # --- resonance and voice source
     sp = nasalize(sp, seg.voiced, min(1.0, p["nasal"]), sp_rng)
