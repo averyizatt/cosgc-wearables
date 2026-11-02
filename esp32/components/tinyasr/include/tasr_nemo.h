@@ -43,6 +43,9 @@ void tasr_nemo_stream_set_sink(tasr_nemo_stream_t *s, float *logits, int max_fra
 // model emitted it (greedy CTC peaks), averaged and the lowest one. A recognizer-side cue for the user, calibrated on host.
 typedef struct { float mean_logp, min_logp; int tokens; } tasr_nemo_conf_t;
 void tasr_nemo_last_confidence(tasr_nemo_conf_t *c);
+// Phrase mode: score this list (tasr_phrase.h) during every full pass from now on; NULL turns it off.
+struct tasr_phrases;
+void tasr_nemo_set_phrases(struct tasr_phrases *p);
 void tasr_nemo_stream_free(tasr_nemo_stream_t *s);
 int tasr_nemo_stream_supported(const tasr_nemo_t *m);
 

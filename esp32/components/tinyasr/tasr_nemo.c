@@ -5,6 +5,7 @@
 #include <string.h>
 #include "kernels.h"
 #include "tasr_nemo.h"
+#include "tasr_phrase.h"
 #include "tinyasr.h"
 #include "tinyasr_lm.h"
 
@@ -954,6 +955,8 @@ int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_d
 
 static tasr_nemo_conf_t g_conf;  // of the last full pass; one full pass runs at a time
 void tasr_nemo_last_confidence(tasr_nemo_conf_t *c) { *c = g_conf; }
+static tasr_phrases_t *g_phr;  // phrase list scored during full passes (phrase mode), or NULL
+void tasr_nemo_set_phrases(tasr_phrases_t *p) { g_phr = p; }
 
 int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, tasr_decoder_t *dec, char *text, int maxlen,
                               float *logit_sink, int max_frames, int *n_frames, const float *kept, int n_kept)
@@ -1288,6 +1291,7 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
     float conf_min = 0.f;
     int conf_n = 0;
     if (dec) tasr_decoder_reset(dec);
+    if (g_phr) tasr_phrases_reset(g_phr);
     if (maxlen) text[0] = 0;
     for (int t0 = 0; t0 < T; t0 += RB) {
         const int tn = T - t0 < RB ? T - t0 : RB;
@@ -1302,7 +1306,7 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
             float bv = l[0];
             for (int v = 1; v < V1; v++) if (l[v] > bv) { bv = l[v]; best = v; }
             float lz = 0.f;
-            if (dec || (best != prev && best != m->V)) {
+            if (dec || g_phr || (best != prev && best != m->V)) {
                 float z = 0.f;
                 for (int v = 0; v < V1; v++) z += expf(l[v] - bv);
                 lz = bv + logf(z);
@@ -1313,10 +1317,13 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
                 if (conf_n == 0 || lpb < conf_min) conf_min = lpb;
                 conf_n++;
             }
-            if (dec) {
-                NB(tdc);
+            if (dec || g_phr) {
                 lp[0] = l[m->V] - lz;
                 for (int v = 0; v < m->V; v++) lp[v + 1] = l[v] - lz;
+            }
+            if (g_phr) tasr_phrases_step(g_phr, lp, bv - lz);
+            if (dec) {
+                NB(tdc);
                 tasr_decoder_step(dec, lp);
                 NE(tdc, N_DEC);
             } else if (best != prev && best != m->V && maxlen) {

@@ -17,6 +17,9 @@ grid, full-context final text. Simulated dysarthric speech is our route to more 
 are small but positive. An untuned 1.1 B-parameter model (Parakeet-TDT) is no better on dysarthric speakers than ours. All results use
 held-out speakers. TORGO's prompt overlap is reported, not hidden.
 
+Figures: `docs/figures/make_figures.py` regenerates every figure from the numbers in this file. Figure 2 `fig_ladder` (table 1), figure 3
+`fig_simulator` (C8), figure 4 `fig_confidence` (C10).
+
 ## 2. System (figure 1)
 
 ```

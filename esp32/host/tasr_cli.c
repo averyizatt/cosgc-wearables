@@ -11,6 +11,7 @@
 #include "tinyasr.h"
 #include "tinyasr_lm.h"
 #include "tasr_nemo.h"
+#include "tasr_phrase.h"
 
 static uint8_t *read_file(const char *path, size_t *n)
 {
@@ -66,7 +67,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s model.{tasr,tnm} [--lm lm.tlm] [--beam 4] [--lm_weight w] [--token_bonus b] file.wav ...\n", argv[0]);
         return 1;
     }
-    const char *lm_path = NULL;
+    const char *lm_path = NULL, *phr_path = NULL;
     int chunk = 32, left = 4, first = 2, beam = 4, stream = 0, nchunk = 0, nleft = 0, reuse = 0;
     float lw = -1.f, tb = -1.f;
     for (int i = 2; i < argc; i++) {
@@ -74,6 +75,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--reuse")) { stream = reuse = 1; first = i + 1; }  // check tasr_nemo_transcribe_from against tasr_nemo_transcribe (the push-to-talk sequence)
         if (!strcmp(argv[i], "--nchunk") && i + 1 < argc) { nchunk = atoi(argv[++i]); first = i + 1; }  // .tnm streaming; 0 = stored in the model
         if (!strcmp(argv[i], "--nleft") && i + 1 < argc) { nleft = atoi(argv[++i]); first = i + 1; }
+        if (!strcmp(argv[i], "--phrases") && i + 1 < argc) { phr_path = argv[++i]; first = i + 1; }  // phrase mode (make_phrases.py output)
         if (!strcmp(argv[i], "--lm") && i + 1 < argc) { lm_path = argv[++i]; first = i + 1; }
         else if (!strcmp(argv[i], "--chunk") && i + 1 < argc) { chunk = atoi(argv[++i]); first = i + 1; }
         else if (!strcmp(argv[i], "--left") && i + 1 < argc) { left = atoi(argv[++i]); first = i + 1; }
@@ -105,6 +107,15 @@ int main(int argc, char **argv)
         if (!m) { fprintf(stderr, "cannot load model %s\n", argv[1]); return 1; }
         s = tasr_stream_create(m, chunk, left);
         if (lm) tasr_stream_set_decoder(s, tasr_decoder_create(lm, 257, beam, 6, lw < 0 ? 0.5f : lw, tb < 0 ? 2.0f : tb));
+    }
+    tasr_phrases_t *phr = NULL;
+    if (phr_path && nemo) {
+        size_t psz;
+        uint8_t *pb = read_file(phr_path, &psz);
+        phr = pb ? tasr_phrases_parse((const char *)pb, psz, 1024) : NULL;
+        if (!phr) { fprintf(stderr, "cannot load phrases %s\n", phr_path); return 1; }
+        tasr_nemo_set_phrases(phr);
+        fprintf(stderr, "%d phrases\n", tasr_phrases_count(phr));
     }
     static char text[16384];
     tasr_nemo_stream_t *ns_ = nemo && stream ? tasr_nemo_stream_new(nm, nchunk, nleft, dec) : NULL;
@@ -160,6 +171,11 @@ int main(int argc, char **argv)
             tasr_nemo_conf_t c;
             tasr_nemo_last_confidence(&c);
             fprintf(stderr, "CONF\t%s\t%.4f\t%.4f\t%d\n", argv[i], c.mean_logp, c.min_logp, c.tokens);
+            if (phr) {  // phrase mode: every phrase's log-likelihood, then the free path's score and the frame count
+                fprintf(stderr, "PHR\t%s\t%.3f\t%d\t", argv[i], tasr_phrases_free_score(phr), tasr_phrases_frames(phr));
+                for (int k = 0; k < tasr_phrases_count(phr); k++) fprintf(stderr, k ? " %.3f" : "%.3f", tasr_phrases_score(phr, k));
+                fprintf(stderr, "\n");
+            }
         }
         fprintf(stderr, "  %.2f s audio, %.3f s CPU (host)\n", ns / 16000.0, sec);
         free(pcm);

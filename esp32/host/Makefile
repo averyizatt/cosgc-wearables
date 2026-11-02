@@ -1,7 +1,7 @@
-SRC = ../components/tinyasr/tinyasr.c ../components/tinyasr/kernels.c ../components/tinyasr/tinyasr_lm.c ../components/tinyasr/tasr_nemo.c ../components/tinyasr/tasr_seg.c
+SRC = ../components/tinyasr/tinyasr.c ../components/tinyasr/kernels.c ../components/tinyasr/tinyasr_lm.c ../components/tinyasr/tasr_nemo.c ../components/tinyasr/tasr_seg.c ../components/tinyasr/tasr_phrase.c
 CFLAGS = -O2 -std=c11 -D_DEFAULT_SOURCE -ffp-contract=off -I../components/tinyasr/include -I../components/tinyasr -Wall -Wno-unused-function
 all: libtinyasr.dylib tasr_cli seg_test
-HDR = ../components/tinyasr/include/tinyasr.h ../components/tinyasr/include/tasr_nemo.h ../components/tinyasr/kernels.h
+HDR = ../components/tinyasr/include/tinyasr.h ../components/tinyasr/include/tasr_nemo.h ../components/tinyasr/include/tasr_phrase.h ../components/tinyasr/kernels.h
 libtinyasr.dylib: $(SRC) $(HDR)
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $(SRC) -lm
 clean:

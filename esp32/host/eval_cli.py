@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--wavs", default=os.path.expanduser("~/eval_cli_wavs"))
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--phrases", default="", help="phrase mode: score this list (make_phrases.py output) on every clip, full context only")
     ap.add_argument("--chunk", type=int, default=0, help="with --stream: encoder frames per chunk (0: stored in the model)")
     ap.add_argument("--left", type=int, default=0, help="with --stream: left context in frames (0: stored in the model)")
     a = ap.parse_args()
@@ -69,11 +70,15 @@ def main():
         cli += ["--lm", a.lm, "--beam", str(a.beam)]
         cli += ["--lm_weight", str(a.lm_weight)] if a.lm_weight is not None else []
         cli += ["--token_bonus", str(a.token_bonus)] if a.token_bonus is not None else []
+    cli += ["--phrases", a.phrases] if a.phrases else []
     batches = [items[i::a.jobs] for i in range(a.jobs)]
 
     def run(batch):
         p = subprocess.run(cli + [it["_wav"] for it in batch], capture_output=True, text=True)
         conf = {f[1]: [float(f[2]), float(f[3]), int(f[4])] for f in (l.split("\t") for l in p.stderr.splitlines() if l.startswith("CONF\t")) if len(f) == 5}
+        for f in (l.split("\t") for l in p.stderr.splitlines() if l.startswith("PHR\t")):
+            if len(f) == 5 and f[1] in conf:
+                conf[f[1]] += [float(f[2]), int(f[3]), [float(v) for v in f[4].split()]]
         return dict(l.split("\t", 1) if "\t" in l else (l, "") for l in p.stdout.splitlines()), conf
 
     hyp, conf = {}, {}
@@ -87,6 +92,7 @@ def main():
         e = edits(r, h)
         utts.append({"wav": it["wav"], "ref": " ".join(r), "hyp": " ".join(h), "edits": e}
                     | ({"conf_mean": conf[it["_wav"]][0], "conf_min": conf[it["_wav"]][1], "tokens": conf[it["_wav"]][2]} if it["_wav"] in conf else {})
+                    | ({"phr_free": conf[it["_wav"]][3], "phr_frames": conf[it["_wav"]][4], "phr": conf[it["_wav"]][5]} if len(conf.get(it["_wav"], [])) > 3 else {})
                     | {k: it[k] for k in ("speaker", "group", "kind") if k in it})
         keys = ["all"] + [f"by_{k}/{it[k]}" for k in ("group", "speaker", "mic", "kind") if k in it]
         for key in keys:
