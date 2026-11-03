@@ -73,6 +73,7 @@ TORGO test, device engine, int8 + LM unless noted. Result files: `~/lmtest/<mode
 | 5 | big6 | dysarthric share of audio 6.5 → 26 % | 23.86 / 46.92 | 17.74 / 36.56 | E13 | solid |
 | 6 | big7 (on the board) | + mel-level simulated dysarthria on 30 % of LibriSpeech clips | 23.31 / 45.99 | 17.03 / 35.43 | E15 | solid (CI −1.08..−0.35) |
 | 7 | big9 | + 120 h of waveform-simulated speech (round 2), same steps | 25.09 / 46.75 | 18.41 / 36.76 | E15 | worse (CI +0.94..+1.84); confounded: real data seen half as often (F38) |
+| 8 | big10 | from row 6: the mel-level simulation replaced by 100 source hours of transparently rendered waveform simulation (round 4), steps scaled to keep real exposure | 22.80 / 46.04 | 16.64 / 35.41 | E16 | no change on dysarthric speakers (CI −1.47..+1.99); controls better; UASpeech dysarthric better, controls worse (F45) |
 
 Per speaker, final, row 6: F03 29.77, M05 46.14, FC03 7.74, MC04 9.14. Row 6 on other sets, float greedy: UASpeech 65.46 (shipped 72.8
 streaming), LibriSpeech 4.19 (shipped 4.01).
@@ -87,8 +88,8 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | C4 | The int8 loss of fine-tunes came from the export grid, not from 8 bits: rounding on the parent model's grid discarded 77–88 % of the weight change; another grid keeps 99 %. | E8b, E10 (F18, F21) | solid |
 | C5 | Context is the largest lever on the device: full-context final text cuts WER from 25.1 to 19.8 % (dysarthric 51.2 → 42.2), and the P4 computes it in about 0.64 × the utterance. | E12 (F23) | solid |
 | C6 | The share of dysarthric audio matters up to about 26 %; beyond that the gain is one speaker and unfamiliar words get worse. | E13, E14 (F25, F31) | solid |
-| C7 | Simulated dysarthria helps slightly at 24 layers (−0.7 points, CI excludes zero) without the UASpeech cost of more real data; it did not help at 16 layers. | E4, E15 (F11, F33) | tentative (one seed) |
-| C8 | A signal-level simulator matches real dysarthric speech on rate, pausing, rhythm and spectral tilt; with sound-level errors from phone alignments and measured error tables, its dysarthria conditions span every TORGO training speaker by WER (severity 0.3–1.5). It is still separable from real dysarthric speech (AUC 0.99) and sounds less dysarthric to a probe than real severe speech. | E5, E15, E16 (F32, F39, F43) | solid (measurement); whether it helps training: big10 |
+| C7 | Simulated dysarthria helps slightly at 24 layers (−0.7 points, CI excludes zero) without the UASpeech cost of more real data; it did not help at 16 layers. Scaling it up to 100 source hours of waveform simulation with real exposure held fixed does not help TORGO's dysarthric speakers (35.43 → 35.41). It moves the model toward unseen dysarthric speech (UASpeech dysarthric −1.6 to −2.5 points) and away from unseen typical speech (UASpeech controls +1.5). | E4, E15, E16 (F11, F33, F38, F45) | tentative (one seed); the large-scale result is solid for this simulator |
+| C8 | A signal-level simulator matches real dysarthric speech on rate, pausing, rhythm and spectral tilt; with sound-level errors from phone alignments and measured error tables, its dysarthria conditions span every TORGO training speaker by WER (severity 0.3–1.5). It is still separable from real dysarthric speech (AUC 0.99) and sounds less dysarthric to a probe than real severe speech. | E5, E15, E16 (F32, F39, F43) | solid (measurement); in training it does not help TORGO's dysarthric speakers (big10, F45) |
 | C9 | Size alone does not solve dysarthric speech: an untuned 1.1 B model scores 90.7 % on UASpeech dysarthric speakers (ours 94.9) and 23.1 % on TORGO test (ours 18.5, float greedy, prompt-familiar). | E15 (F35) | solid |
 | C10 | The model's own token posteriors flag errors: AUC 0.894; utterances marked "sure" (54 %) are 95 % fully right, "probably wrong" (24 %) 27 %. | E17 (F36) | solid on TORGO; device microphone pending |
 | C11 | On the board's microphone, signal-to-noise ratio matters and level control does not; noise reduction helps only near 8 dB SNR. | E14 (F28, F29) | tentative (simulated noise) |
@@ -102,6 +103,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 - Adding UASpeech to training made TORGO worse, 25.14 → 27.55 (E11, F22).
 - More dysarthric share beyond 26 % gave no broad gain (big8, F31).
 - Language-model weight tuning, a wider beam and padding gave at most 0.3 points (F27).
+- 100 source hours of the waveform simulator, with real exposure held fixed, left TORGO's dysarthric speakers unchanged (big10, F45).
 
 ## 6. Device (table 2)
 
@@ -157,7 +159,7 @@ Finding:    one sentence for the paper (numbered).
    python3 eval_cli.py <model>_q121.tnm torgo_test.jsonl --out <model>_q121_full_lm.json --lm ../../models/nemo_lm.tlm
    ```
    Add `--stream` for the live column.
-3. Compare: `paired.py <parent>_utts.jsonl <model>_utts.jsonl`.
+3. Compare: `python train/paired_ci.py <parent>_q121_full_lm_utts.jsonl <model>_q121_full_lm_utts.jsonl` (engine output). The same script works on eval_manifest.py's `*_utts.jsonl` with `--mode full|stream`. It prints all clips, each group and each speaker.
 
 ## 10. Still to do for the paper
 
@@ -165,7 +167,8 @@ Finding:    one sentence for the paper (numbered).
 |---|---|---|
 | Rotate held-out TORGO speakers (e.g. 3 folds) for the final recipe | two test speakers are too few | planned |
 | 3 seeds for big6, big7 and the best simulated run | one seed per model | planned |
-| big10: 120 h of transparently rendered simulation, real exposure kept at big7's | C7, C8 | running (started 2026-11-02) |
+| big10: 120 h of transparently rendered simulation, real exposure kept at big7's | C7, C8 | done (F45): no gain on dysarthric TORGO speakers; big7 stays deployed |
+| Rotate held-out TORGO speakers, folds B and C (E19) | two test speakers are too few | running (started 2026-11-03) |
 | Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
 | Teacher-student training from a fine-tuned Parakeet 1.1B (CC-BY-4.0) | more accuracy at 19 M | planned |

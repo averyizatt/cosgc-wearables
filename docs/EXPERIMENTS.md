@@ -1232,6 +1232,59 @@ Matching severity per real training speaker, all prompts / sentences only: M03 a
 
 **big10** (`train/runs/big10.cmd`, started 2026-11-02 21:32 on the training PC). big7's data plus simtr360, a new transparent set: train-clean-360 (921 speakers and texts big7 never trains on; manifest 104014 clips, 363.6 h), 100 source hours of clips up to 16 s (`--max_src`, new; from big9's set, sources up to 16 s keep 87 % of slowed output under 32 s), all 14 conditions, severity 0.1–1.4, phone alignments, measured tables. 9950 steps, so real data is seen as often as in big7 (big9 halved that, Finding 38). Comparisons: big7 (deployed) and big9.
 
+Two differences from big7 besides the new set:
+- big10 has no mel-level simulation (big7's `--p_dys 0.3`): the waveform simulation replaces it.
+- As in big9, the dysarthric TORGO clips are listed twice, to keep their share of the larger set.
+
+Generation was stopped once, at 3438 clips, to free the PC; it resumed from those clips. Generation ran at about 30 × real time. Training: 9950 steps in 8201 s. Finished 2026-11-03 07:19.
+
+**big10 result.**
+
+Float, greedy (eval_manifest.py):
+
+| Set | big6 | big7 | big9 | big10 |
+|---|---|---|---|---|
+| TORGO test, full / chunk 64 | 19.18 / 26.17 | 18.46 / 25.75 | 20.02 / 27.54 | 18.28 / 25.14 |
+| UASpeech, full | 66.25 | 65.46 | 64.81 | 65.29 |
+| UASpeech control / dysarthric, chunk 64 | 42.71 / 95.09 | 40.74 / 94.86 | 41.96 / 92.00 | 42.20 / 92.34 |
+| LibriSpeech test-clean, full | 4.08 | 4.19 | 4.21 | 4.27 |
+
+Engine (int8, LM), TORGO test, against big7 (paired bootstrap over clips, 95 %). The speaker groups are pooled: F03 + M05 and FC03 + MC04.
+
+| | big7 | big10 | CI of the difference |
+|---|---|---|---|
+| final, all | 17.03 | 16.64 | −0.94..+0.33 |
+| live (chunk 32), all | 23.31 | 22.80 | −1.04..−0.02 |
+| final, dysarthric speakers | 35.43 | 35.41 | −1.47..+1.99 |
+| live, dysarthric speakers | 45.99 | 46.04 | −1.01..+1.16 |
+| final, control speakers | 8.37 | 7.82 | −0.89..−0.22 |
+| live, control speakers | 12.65 | 11.87 | −1.32..−0.26 |
+| final M05 / F03 | 46.14 / 29.77 | 44.27 / 30.72 | −3.81..0.00 / −0.93..+3.93 |
+
+Against big9 (engine): dysarthric speakers final 36.76 → 35.41 (−2.57..0.00); control speakers final 9.78 → 7.82 (−2.35..−1.54), live 14.90 → 11.87.
+
+UASpeech (float, paired bootstrap over clips, big10 minus big7):
+
+| | full | CI | chunk 64 | CI |
+|---|---|---|---|---|
+| dysarthric speakers | 89.90 → 88.26 | −2.86..−0.36 | 94.86 → 92.34 | −3.80..−1.12 |
+| control speakers | 37.29 → 38.82 | +0.36..+2.61 | 40.74 → 42.20 | +0.30..+2.69 |
+
+All intervals from `train/paired_ci.py` (engine output, and eval_manifest.py output with `--mode`).
+
+**Finding 45:** with real exposure restored, 100 source hours of the waveform simulation does not change recognition of TORGO's dysarthric test speakers. Final WER is 35.43 against 35.41, CI −1.5..+2.0.
+
+What it does change:
+- TORGO control speakers improve by 0.6–0.8 points.
+- UASpeech's dysarthric speakers improve by 1.6–2.5 points. These are unseen speakers and words.
+- UASpeech's control speakers get 1.5 points worse.
+
+The UASpeech pattern matches big9's (92.0 / 42.0), so the simulated speech causes it, whatever the renderer. TORGO's controls recovering from big9 (9.78 → 7.82) confirms that big9's TORGO loss came from halved real exposure (Finding 38).
+
+The pre-set test was that big10 beats big7 overall with a CI excluding zero. It passes only in live mode (−1.04..−0.02), and only through the control speakers. The simulator therefore does not deliver what it was built for, better recognition of the deployed population's speech. It does shift the model toward unseen dysarthric speech, at a cost on unseen typical speech.
+
+big7 stays on the board. The two are equal on the target speakers, and big10's UASpeech gain is at 92 % WER, where neither model is usable.
+
 ### E17. A confidence meter on the device (2026-11-02)
 
 **Question:** can the device tell the user when its text is probably wrong? A wrong transcript shown with confidence is worse than one marked as doubtful.
@@ -1315,7 +1368,7 @@ Change:     only the TORGO split. Fold A is the official split (F03, M05, FC03, 
 Recipe:     `train/runs/fold.cmd <fold> <speakers> <big6|big7>`: makes and packs the fold's manifests, scores the base model on the fold's test set, trains with the named run's settings, and scores TORGO (fold test), LibriSpeech and UASpeech, float greedy. `G:\cosgc\folds.cmd` runs B and C with both recipes after big10.
 Data:       no fold's test speakers in its training manifests. Caveat: the mel-level simulation (big7 recipe) was calibrated in E5 on fold A's training speakers, which include fold B's and C's test speakers: a small leak in the simulated arm only. UASpeech is test-only, as always.
 Measure:    per fold, WER change from base, and big7 against big6 (paired CI); the paper reports the mean over folds A–C.
-Result:     pending.
+Result:     pending. Started 2026-11-03 07:24, after big10; order B big6, C big6, B big7, C big7.
 
 ## 5. Findings so far, for the paper
 
