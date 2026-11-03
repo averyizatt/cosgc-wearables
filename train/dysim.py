@@ -642,6 +642,8 @@ def _work(a):
 def gen(a):
     items = [json.loads(l) for l in open(a.manifest, encoding="utf-8") if l.strip()]
     np.random.default_rng(a.seed).shuffle(items)
+    if a.max_src:  # slowing stretches clips; training drops anything over its --max_dur, so long sources would be made for nothing
+        items = [it for it in items if it.get("n", it.get("duration", 0) * SR) / SR <= a.max_src]
     if a.hours:
         keep, tot = [], 0.0
         for it in items:
@@ -711,6 +713,7 @@ if __name__ == "__main__":
     d = sub.add_parser("demo"); d.add_argument("wav"); d.add_argument("outdir"); d.add_argument("--severity", type=float, default=0.7); d.add_argument("--tg", default="", help="the clip's TextGrid"); d.add_argument("--real_errors", default="")
     g = sub.add_parser("gen"); g.add_argument("--manifest", required=True); g.add_argument("--out", required=True); g.add_argument("--hours", type=float, default=0.0)
     g.add_argument("--workers", type=int, default=6); g.add_argument("--seed", type=int, default=1); g.add_argument("--conditions", default=""); g.add_argument("--severity", default="0.2,1.0")
+    g.add_argument("--max_src", type=float, default=0.0, help="skip source clips longer than this many seconds (0: keep all); --hours counts source audio")
     g.add_argument("--real_errors", default="", help="real_errors.py output: sound errors from measured training speakers")
     g.add_argument("--align_dir", default="", help="phone alignments (TextGrid per utterance, e.g. zenodo.org/records/2619474): sound-level errors")
     for q in (d, g):
