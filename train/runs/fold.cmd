@@ -32,6 +32,7 @@ if not exist %D%\%T%_test.jsonl %PY% make_manifest_torgo.py %D%\TORGO %D%\%T% --
 %PY% -c "import json,sys;s=sorted({json.loads(l)['speaker'] for l in open(r'%D%\%T%_test.jsonl',encoding='utf8')});w=sorted('%H%'.split(','));print('test speakers',s);sys.exit(s!=w)" || (echo held-out speakers do not match & exit /b 1)
 if not exist %P%\%T%_train.jsonl %PY% pack_audio.py %D%\%T%_train.jsonl %P%\%T%_train || (echo pack failed & exit /b 1)
 if not exist %P%\%T%_dys_x8.jsonl %PY% -c "import json;L=[l for l in open(r'%P%\%T%_train.jsonl',encoding='utf8') if json.loads(l)['group']=='dysarthric'];open(r'%P%\%T%_dys_x8.jsonl','w',encoding='utf8',newline='\n').writelines(L*8);print(len(L),'dysarthric clips x 8')"
+%PY% -c "import json,os,sys;h=set('%H%'.split(','));R=[json.loads(l) for f in (r'%P%\%T%_train.jsonl',r'%P%\%T%_dys_x8.jsonl') for l in open(f,encoding='utf8')];bad=sorted({r['speaker'] for r in R}&h);miss=sorted({r['pack'] for r in R if not os.path.exists(r['pack'])});print('packed training: test speakers',bad,'missing packs',miss);sys.exit(bool(bad or miss))" || (echo packed training data is stale & exit /b 1)
 if not exist %E%\eval\base_%T%_test.json %PY% eval_manifest.py --nemo %E%\base24x --ckpt %E%\base24x\init.pt --manifest %D%\%T%_test.jsonl --out %E%\eval\base_%T%_test.json
 set O=%E%\fold%F%_%R%
 if not exist %O%\last.pt start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\base24x\init.pt --keep_head ^
