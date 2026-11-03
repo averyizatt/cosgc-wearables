@@ -37,7 +37,7 @@ Figures: `docs/figures/make_figures.py` regenerates every figure from the number
 | Export: int8 weights on a max/121 grid | `train/export_nemo.py` (E10) | Method |
 | Engine and LM: C, int8, beam 4 + token LM | `esp32/components/tinyasr/` (E8) | Method |
 | Firmware: push-to-talk, live text, full-context final pass reusing the stream's front end, confidence | `esp32/firmware/main/mic.c` (E12, E14, E17) | System |
-| Simulator: WORLD-based, 14 conditions, sound-level errors from phone alignments | `train/dysim.py`, `train/phonesim.py` (E15, E16) | Method |
+| Simulator: 14 conditions, sound-level errors from phone alignments spliced from the clip's own phones, rendered on the original recording (PSOLA + filter; WORLD only for new voicing) | `train/dysim.py`, `train/phonesim.py` (E15, E16) | Method |
 
 ## 3. Evaluation protocol (fixed for every result)
 
@@ -88,12 +88,14 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | C5 | Context is the largest lever on the device: full-context final text cuts WER from 25.1 to 19.8 % (dysarthric 51.2 → 42.2), and the P4 computes it in about 0.64 × the utterance. | E12 (F23) | solid |
 | C6 | The share of dysarthric audio matters up to about 26 %; beyond that the gain is one speaker and unfamiliar words get worse. | E13, E14 (F25, F31) | solid |
 | C7 | Simulated dysarthria helps slightly at 24 layers (−0.7 points, CI excludes zero) without the UASpeech cost of more real data; it did not help at 16 layers. | E4, E15 (F11, F33) | tentative (one seed) |
-| C8 | A signal-level simulator matches real dysarthric speech on rate, pausing, rhythm and spectral tilt, but severe simulated speech is about half as hard as real severe speech; wrong sounds are what is missing. | E5, E15 (F32, F34) | solid (measurement), pending (fix: E16) |
+| C8 | A signal-level simulator matches real dysarthric speech on rate, pausing, rhythm and spectral tilt; with sound-level errors from phone alignments and measured error tables, its dysarthria conditions span every TORGO training speaker by WER (severity 0.3–1.5). It is still separable from real dysarthric speech (AUC 0.99) and sounds less dysarthric to a probe than real severe speech. | E5, E15, E16 (F32, F39, F43) | solid (measurement); whether it helps training: big10 |
 | C9 | Size alone does not solve dysarthric speech: an untuned 1.1 B model scores 90.7 % on UASpeech dysarthric speakers (ours 94.9) and 23.1 % on TORGO test (ours 18.5, float greedy, prompt-familiar). | E15 (F35) | solid |
 | C10 | The model's own token posteriors flag errors: AUC 0.894; utterances marked "sure" (54 %) are 95 % fully right, "probably wrong" (24 %) 27 %. | E17 (F36) | solid on TORGO; device microphone pending |
 | C11 | On the board's microphone, signal-to-noise ratio matters and level control does not; noise reduction helps only near 8 dB SNR. | E14 (F28, F29) | tentative (simulated noise) |
 | C12 | Bit-exact kernels do not guarantee identical transcripts across platforms: dynamic int8 quantization amplifies 1e-6 input differences to about 1 % in the logits. | E12 (F24) | solid |
 | C13 | A user's short phrase list, scored by CTC on the device, raises fully right utterances for dysarthric speakers from 50 % to 84 % (25 phrases) or 89 % (10), with 5 % of off-list speech wrongly matched. | E18 (F37) | tentative (threshold fitted on the test clips; TORGO prompts) |
+| C14 | Vocoder resynthesis is a hidden confound in simulated speech: WORLD with no change at all costs 11 points of WER on TORGO's recordings (0.4 on clean LibriSpeech) and is perfectly separable from the original; it supplied about half of what made the simulation sound dysarthric. Editing the recording in place (PSOLA + filtering) removes it. | E16 (F40, F42, F44) | solid |
+| C15 | Voice conversion (kNN-VC) keeps the dysarthria of real recordings (probe 96 %) but adds 7–10 points of its own. | E16 (F41) | solid (measurement); not used in training |
 
 **Negative results worth reporting:**
 - Frame-level in-place distillation damaged an already-streaming model (E2).
@@ -163,7 +165,8 @@ Finding:    one sentence for the paper (numbered).
 |---|---|---|
 | Rotate held-out TORGO speakers (e.g. 3 folds) for the final recipe | two test speakers are too few | planned |
 | 3 seeds for big6, big7 and the best simulated run | one seed per model | planned |
-| big9 and the version-4 simulator (calibration, realism, voice conversion) | C7, C8 | big9 running; E16 pending |
+| big10: 120 h of transparently rendered simulation, real exposure kept at big7's | C7, C8 | running (started 2026-11-02) |
+| Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
 | Teacher-student training from a fine-tuned Parakeet 1.1B (CC-BY-4.0) | more accuracy at 19 M | planned |
 | Cite: TORGO (Rudzicz et al. 2012), UASpeech (Kim et al. 2008), LibriSpeech, MUSAN, Conformer, CTC, SpecAugment, WORLD (Morise et al. 2016), MFA (McAuliffe et al. 2017) and the LibriSpeech alignments (Lugosch et al. 2019), kNN-VC (Baas et al. 2023), Parakeet (NVIDIA), the SAP Challenge (Interspeech 2025), Oído | | add to log §8 |
