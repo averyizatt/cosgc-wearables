@@ -1368,7 +1368,7 @@ Change:     only the TORGO split. Fold A is the official split (F03, M05, FC03, 
 Recipe:     `train/runs/fold.cmd <fold> <speakers> <big6|big7>`: makes and packs the fold's manifests, scores the base model on the fold's test set, trains with the named run's settings, and scores TORGO (fold test), LibriSpeech and UASpeech, float greedy. `G:\cosgc\folds.cmd` runs B and C with both recipes after big10.
 Data:       no fold's test speakers in its training manifests. Caveat: the mel-level simulation (big7 recipe) was calibrated in E5 on fold A's training speakers, which include fold B's and C's test speakers: a small leak in the simulated arm only. UASpeech is test-only, as always.
 Measure:    per fold, WER change from base, and big7 against big6 (paired CI); the paper reports the mean over folds A–C.
-Result:     pending. Started 2026-11-03 07:24, after big10; order B big6, C big6, B big7, C big7.
+Result:     pending. Started 2026-11-03 07:21, after big10; order B big6, C big6, B big7, C big7.
 
 ## 5. Findings so far, for the paper
 
