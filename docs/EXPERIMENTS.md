@@ -1164,9 +1164,47 @@ By condition: CP 80.1, ALS 64.4, hyperkinetic 61.1, flaccid 57.7, hypokinetic 54
 - LibriSpeech after simulation: 56.3 %, against 31.2 %.
 - Discriminator, real dysarthric against simulated from TORGO controls: AUC 1.000 for every condition. The simulation is trivially told apart; the test of the vocoder alone follows.
 
-*Voice conversion trial:* not run. `torch.hub` could not resolve the repository's default branch; retried with the branch named.
+*Voice conversion trial:* the first two attempts failed: `torch.hub` could not resolve the default branch, then SSL certificate verification failed on the PC. Fixed by naming the branch (`bshall/knn-vc:master`) and setting `SSL_CERT_FILE` to certifi's bundle. `knnvc_gen.py from_dys --per_source 2 --n_targets 40` then re-voiced TORGO's dysarthric training clips with 40 LibriSpeech voices: 7.7 h in all, 5.6 times faster than real time on the RTX 3060. Its measurement follows below.
 
 **Finding 39:** with sound-level errors and measured error tables, the simulator spans mild real speakers (severity 0.3–0.44 matches M03 and F04) and reaches 60–63 %. Real severe speakers cost 73–85 % on sentences, so the gap at the severe end is about three quarters closed, from about half (Finding 34). The measured errors agree with the clinical descriptions the profiles were built on. But a linear classifier separates simulated from real speech perfectly, so the simulation carries a strong fingerprint the model could learn as a shortcut.
+
+*The vocoder alone* (`vocoder.cmd`, `voccost.cmd`). 1276 clips from TORGO's control training speakers, passed through WORLD with no traits (severity 0, which turns every trait off; checked in `profile`), set against the same clips unprocessed:
+
+| | original | WORLD analysis + resynthesis |
+|---|---|---|
+| base24x, full context, WER | 18.73 % | 29.92 % |
+| big7, full context, WER | 7.72 % | 17.41 % |
+| realism probe, judged dysarthric | 2.0 % | 17.0 % |
+| discriminator, original vs resynthesized (speakers held out) | | AUC 1.000 |
+
+Every speaker gets worse (base: FC01 34.1 → 42.9, FC02 14.8 → 21.1, MC01 19.6 → 27.4, MC02 24.8 → 34.9, MC03 16.5 → 38.8). big7 never saw WORLD output (its simulation is the older mel-level one, Finding 33) and loses 9.7 points.
+
+**Finding 40:** the vocoder, not the dysarthria, is a large part of what the simulation contains. Resynthesis with no change at all adds 10–11 points of WER for both models (more than doubling big7's error on clean speech), is told from the original perfectly, and by itself moves the probe a sixth of the way toward "dysarthric". Two consequences: (1) part of the "difficulty" measured in calibration (Finding 39) is vocoder damage, so the severity scale is miscalibrated; (2) a model trained on WORLD output can learn the fingerprint as a shortcut for "dysarthric" (Finding 39's AUC 1.000), and what it learns on it need not carry over to real recordings. This may explain why simulated data has helped so little (Findings 11, 33, 38).
+
+*Rendering without the vocoder* (`dysim.py --render transparent`, the new default). The traits are still computed on WORLD frames, but the output is the original recording changed only where the traits change it:
+- timing and pitch: pitch-synchronous overlap-add of the original waveform (TD-PSOLA, Moulines & Charpentier 1990). Every change of timing (phone deletions and insertions, rate, pauses, repetitions) is tracked as each output frame's position in the original. Where neither pitch nor rate changes, grains are placed in phase with the original's own pitch marks, so no change gives back the input;
+- envelope and voicing: a time-varying filter, the ratio of the target to the original envelope, on the STFT (5 ms hop, the WORLD frame grid), plus noise shaped to the target wherever the target is noisier (WORLD's convention: aperiodic power = envelope × aperiodicity²). This renders breathiness, devoicing, lenition, fatigue and breaths;
+- WORLD only where the recording has nothing to offer: frames made voiced that were unvoiced in the source, and the electrolarynx and esophageal voice sources.
+
+At severity 0 the output is 33 dB from the input (WORLD: −3 dB, its phase is its own); the filter alone is exact (104 dB). Compute is about 1.4 times WORLD's (1.0 s against 0.7 s for 10 s of audio, one core).
+
+Sound substitutions are spliced from the recording itself (`phonesim.py`): a full substitution copies the clip's own longest instance of the target phone (at least 3 frames), stretched to fit, and an inserted schwa loops the clip's own AH frames. Only when the clip has no instance of the phone does the frame-level fallback (envelope interpolation toward the target) run.
+
+A bug found on the first large run: the in-phase snapping could move a grain back before the previous one where the timing jumps backward (a repetition), and the loop then cycled forever. One worker spent over 2 hours on one clip (seen with `py-spy dump`: inside `psola`). Fixed by never placing a grain at or before the previous one, which bounds the loop; 144 stress runs over all conditions on an aligned clip all finished.
+
+*Voice conversion trial measured* (`vccheck.cmd`): 7800 clips, TORGO's dysarthric training recordings re-voiced by 40 LibriSpeech speakers, against the same recordings unconverted. Base24x, full context, WER by source speaker:
+
+| | F04 | M03 | F01 | M02 | M04 | M01 | all |
+|---|---|---|---|---|---|---|---|
+| original | 22.0 | 15.3 | 79.1 | 84.1 | 89.8 | 93.9 | 61.3 |
+| kNN-VC, re-voiced | 32.0 | 21.9 | 89.6 | 111.3 | 117.1 | 121.8 | 80.3 |
+
+- Realism probe: judged dysarthric 96.1 %, against 98.1 % for the unconverted sources. The dysarthria survives conversion as far as the probe can tell.
+- Discriminator, real dysarthric against re-voiced: AUC 0.983. Easier to mistake for real than WORLD output (1.000), but still separable.
+- The mild speakers lose 7–10 points, about what the WORLD vocoder costs clean speech (Finding 40); the severe speakers go above 100 % because the model inserts words into the converted babble.
+- big7 on the re-voiced clips: 51.1 % (F04 16.5, M03 9.3, F01 71.0, M02 75.6, M04 78.0, M01 73.7). big7 trained on the unconverted clips (27.4 % on them), so this is not a held-out score; it shows the conversion moves them far from what the model memorised.
+
+**Finding 41:** kNN-VC keeps what makes speech sound dysarthric (the probe rates 96 % of re-voiced clips dysarthric) and makes the real dysarthric recordings available in many new voices, but it adds its own damage, about 7–10 points on mild speakers, similar to the vocoder's. As training data it would carry the same risk as WORLD: a fingerprint the model could learn instead of the dysarthria. It is not used in training until a run shows it helps on held-out speakers.
 
 ### E17. A confidence meter on the device (2026-11-02)
 

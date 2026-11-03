@@ -180,11 +180,26 @@ def _voiced_f0(f0, a, b):
     return np.interp(np.arange(a, b), v, f0[v])
 
 
-def _render(ls, f0, ap, a, b, src, dst, ex, amount, rng, warp):
-    """Move frames a..b from sound src toward sound dst by amount (1 = full substitution). Works in place."""
+def _render(ls, f0, ap, a, b, src, dst, ex, amount, rng, warp, donor=None):
+    """Move frames a..b from sound src toward sound dst by amount (1 = full substitution). Works in place.
+    donor: (original log envelope, f0, aperiodicity, {sound: (start, end) of its longest instance}, each frame's source position). With it,
+    a full substitution by a sound the clip contains takes that instance's own frames, and the renderer the recording behind them."""
     n = b - a
     edge = np.minimum(1.0, np.minimum(np.arange(1, n + 1), np.arange(n, 0, -1)) / 2.0)[:, None]  # soften the first and last frame
     k = amount * edge
+    if donor is not None and amount >= 1.0 and dst in donor[3]:  # the speaker's own recording of the target sound, stretched to fit
+        ls0, f00, ap00, loc, srcmap = donor
+        la, lb = loc[dst]
+        pos = np.linspace(la, lb - 1, n)
+        q = np.round(pos).astype(int)
+        ls[a:b], f0[a:b], ap[a:b] = ls0[q], f00[q], ap00[q]
+        srcmap[a:b] = pos
+        for d, wt in ((1, 0.35), (2, 0.15)):
+            if a - d >= 0:
+                ls[a - d] = (1 - wt) * ls[a - d] + wt * ls[a]
+            if b - 1 + d < len(ls):
+                ls[b - 1 + d] = (1 - wt) * ls[b - 1 + d] + wt * ls[b - 1]
+        return
     if dst in ex:  # this speaker's own version of the target sound
         tgt, tap = ex[dst]
         ls[a:b] = (1 - k) * ls[a:b] + k * tgt[None]
@@ -225,13 +240,20 @@ def _render(ls, f0, ap, a, b, src, dst, ex, amount, rng, warp):
 
 
 def apply(f0, sp, ap, phones, z, rng, warp):
-    """f0, sp, ap: WORLD frames; phones from phone_frames. Returns new frames (deletions and insertions change the length) and a list of
-    the errors made, as (kind, sound, new sound)."""
+    """f0, sp, ap: WORLD frames; phones from phone_frames. Returns new frames (deletions and insertions change the length), a list of
+    the errors made, as (kind, sound, new sound), and each output frame's (fractional) position in the input: a full substitution by a
+    sound the clip contains, and an inserted schwa, come from that sound's own frames elsewhere in the clip."""
     if not phones or not any(z[k] for k in ("subst", "distort", "delete", "final", "cluster", "epen", "vowel", "diph")):
-        return f0, sp, ap, []
+        return f0, sp, ap, [], np.arange(len(f0))
     f0, ap = f0.copy(), ap.copy()
     ls = np.log(sp + 1e-16)
     ex = _exemplars(ls, f0, ap, phones)
+    loc = {}  # each sound's longest instance in the clip (at least 15 ms): the donor for full substitutions
+    for a, b, ph, *_ in phones:
+        if b - a >= 3 and (ph not in loc or b - a > loc[ph][1] - loc[ph][0]):
+            loc[ph] = (a, b)
+    srcmap = np.arange(len(f0), dtype=np.float64)
+    donor = (ls.copy(), f0.copy(), ap.copy(), loc, srcmap)
     keep = np.ones(len(f0), bool)
     insert = {}  # frame -> number of schwa frames to insert before it
     log = []
@@ -248,7 +270,7 @@ def apply(f0, sp, ap, phones, z, rng, warp):
         if real and real[1] and rng.random() < sum(real[1].values()):  # a measured substitution: the sound this speaker's group said instead
             qs = list(real[1]); w = np.array([real[1][q] for q in qs])
             dst = qs[int(rng.choice(len(qs), p=w / w.sum()))]
-            _render(ls, f0, ap, a, b, ph, dst, ex, 1.0, rng, warp)
+            _render(ls, f0, ap, a, b, ph, dst, ex, 1.0, rng, warp, donor)
             log.append(("substitute", ph, dst))
             continue
         if ph in CONS:
@@ -263,7 +285,7 @@ def apply(f0, sp, ap, phones, z, rng, warp):
         r = rng.random()
         if ph in VOWELS:
             if ph in DIPH and rng.random() < z["diph"] * sw:
-                _render(ls, f0, ap, a + (b - a) // 3, b, ph, DIPH[ph], ex, 1.0, rng, warp)  # the glide is left out
+                _render(ls, f0, ap, a + (b - a) // 3, b, ph, DIPH[ph], ex, 1.0, rng, warp, donor)  # the glide is left out
                 log.append(("reduce", ph, DIPH[ph]))
             elif ph != "AH" and rng.random() < z["vowel"] * sw:
                 _render(ls, f0, ap, a, b, ph, "AH", ex, rng.uniform(0.4, 0.9), rng, warp)
@@ -274,7 +296,7 @@ def apply(f0, sp, ap, phones, z, rng, warp):
             if dst is None:
                 continue
             full = r < z["subst"] * sw
-            _render(ls, f0, ap, a, b, ph, dst, ex, 1.0 if full else rng.uniform(0.3, 0.7), rng, warp)
+            _render(ls, f0, ap, a, b, ph, dst, ex, 1.0 if full else rng.uniform(0.3, 0.7), rng, warp, donor)
             log.append(("substitute" if full else "distort", ph, dst))
     sp = np.exp(ls)
     idx = []
@@ -285,18 +307,26 @@ def apply(f0, sp, ap, phones, z, rng, warp):
         if keep[t]:
             idx.append(t)
     if not idx:
-        return f0, sp, ap, log
+        return f0, sp, ap, log, srcmap
     idx = np.array(idx)
     real = np.where(idx >= 0, idx, np.minimum(-idx - 1, len(f0) - 1))
     f0n, spn, apn = f0[real].copy(), sp[real].copy(), ap[real].copy()
+    src = srcmap[real]
     ins = idx < 0
     if ins.any():
-        if schwa is not None:
-            spn[ins] = np.exp(schwa[0])[None]
-            apn[ins] = schwa[1][None]
+        if "AH" in loc:  # the clip's own schwa, looped over its frames
+            la, lb = loc["AH"]
+            run = np.cumsum(ins) - np.maximum.accumulate(np.where(~ins, np.cumsum(ins), 0))  # 1, 2, ... within each inserted run
+            q = la + (run[ins] - 1) % (lb - la)
+            spn[ins], apn[ins], f0n[ins] = np.exp(donor[0][q]), donor[2][q], donor[1][q]
+            src[ins] = q
         else:
-            spn[ins] = np.exp(gaussian_filter1d(ls[f0 > 0].mean(0) if (f0 > 0).any() else ls.mean(0), 3))[None]
-            apn[ins] = 0.2
-        vf = f0[f0 > 0]
-        f0n[ins] = np.median(vf) if len(vf) else 120.0
-    return f0n, spn, apn, log
+            if schwa is not None:
+                spn[ins] = np.exp(schwa[0])[None]
+                apn[ins] = schwa[1][None]
+            else:
+                spn[ins] = np.exp(gaussian_filter1d(ls[f0 > 0].mean(0) if (f0 > 0).any() else ls.mean(0), 3))[None]
+                apn[ins] = 0.2
+            vf = f0[f0 > 0]
+            f0n[ins] = np.median(vf) if len(vf) else 120.0
+    return f0n, spn, apn, log, src

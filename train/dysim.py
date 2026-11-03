@@ -4,6 +4,8 @@
 Replaces nothing in simdys.py (mel features, whole clip); this works on a source-filter analysis (WORLD: pitch, spectral envelope, aperiodicity) and
 knows roughly which frames are vowels, frication, bursts and silence, so it can weaken consonants, centralize vowels, change the voice source,
 insert repetitions and so on. Audio is written to a pack for the normal training pipeline, which then adds room noise and reverberation.
+The traits are computed on WORLD frames, but by default (--render transparent) the output is the original recording, retimed and repitched by
+overlap-add and filtered toward the new envelope; resynthesizing with WORLD (--render world) costs a model 10 points on clean speech (E16).
 
     python dysim.py demo in.wav outdir [--severity 0.7]                 one file per condition, to listen to
     python dysim.py gen --manifest ls100_train.jsonl --out G:/x/sim [--hours 100] [--workers 6] [--seed 1] [--conditions a,b]
@@ -73,15 +75,157 @@ def synth(f0, sp, ap):
     return pw.synthesize(f0.astype(np.float64), np.maximum(sp, 1e-16).astype(np.float64), np.clip(ap, 0.0, 1.0).astype(np.float64), SR, FP)
 
 
+# ------------------------------------------------------------------ transparent rendering (E16)
+# Resynthesizing everything with WORLD costs the model 10 points on clean speech and makes every simulated clip detectable (AUC 1.000).
+# Here the original recording is kept and only what the traits change is changed: timing and pitch by pitch-synchronous overlap-add of the
+# original waveform (Moulines & Charpentier 1990), envelope and voicing by a time-varying filter plus shaped noise. With no traits the output is
+# the input. Frames that need voicing the source never had (an unvoiced sound made voiced, an artificial voice source) fall back to WORLD.
+HOP = int(SR * FP / 1000)
+_HANN = {}
+RENDER = "transparent"  # or "world"; gen and demo set it from --render
+
+
+def pitch_marks(x, f0):
+    """Analysis marks: one per pitch period in voiced frames (on the waveform peak near where the period predicts), one per hop elsewhere.
+    Returns sample positions, the period at each mark, and whether it is voiced."""
+    n = len(f0)
+    lp = gaussian_filter1d(x, 2.0)
+    pos, per, vo = [], [], []
+    t, end = 0, len(x)
+    while t < end:
+        j = min(n - 1, t // HOP)
+        if f0[j] > 0:
+            p = int(SR / f0[j])
+            if not vo or not vo[-1]:  # entering a voiced stretch: start on the largest peak in the first period
+                t = t + int(np.argmax(lp[t: t + p])) if t + p < end else t
+            else:
+                lo, hi = max(0, t - p // 5), min(end, t + p // 5 + 1)
+                t = lo + int(np.argmax(lp[lo:hi])) if hi > lo else t
+            pos.append(t); per.append(p); vo.append(True)
+            t += p
+        else:
+            pos.append(t); per.append(HOP); vo.append(False)
+            t += HOP
+    return np.array(pos), np.array(per), np.array(vo, bool)
+
+
+def psola(x, marks, src, ratio, voiced_out, trace=None):
+    """The original waveform at new times and pitch. src: for each output frame, its (fractional) frame in the original. ratio: the pitch
+    wanted in each output frame over the original's there; voiced_out: frames rendered pitch-synchronously."""
+    pos, per, vo = marks
+    pad = 2 * int(per.max()) + 2 * HOP
+    xp = np.concatenate((np.zeros(pad), x, np.zeros(pad)))
+    L = len(src) * HOP
+    y, w = np.zeros(L + 2 * pad), np.zeros(L + 2 * pad)
+    vpos = pos[vo]
+    vper = per[vo]
+    t, was_voiced, last = 0, False, -16
+    while t < L:
+        j = min(len(src) - 1, t // HOP)
+        s = src[j] * HOP + (t - j * HOP)  # where this output sample comes from in the original
+        k = int(np.searchsorted(vpos, s))
+        if k == len(vpos) or (k > 0 and s - vpos[k - 1] < vpos[k] - s):
+            k -= 1
+        # voiced output, once the original's nearest mark is in reach (until then, ordinary hops)
+        if voiced_out[j] and len(vpos) and (was_voiced or -vper[k] // 2 <= vpos[k] - s < vper[k]):
+            rate = src[j + 1] - src[j] if j + 1 < len(src) else 1.0
+            if not was_voiced or (abs(ratio[j] - 1) < 0.01 and abs(rate - 1) < 0.01):
+                # entering voicing, or where neither pitch nor timing changes: in phase with the original's mark (no change gives back the input)
+                d = int(vpos[k] - s)
+                if abs(d) <= vper[k] // 2 or (not was_voiced and 0 <= d < vper[k]):
+                    # never back to or before the last grain: where src jumps back (a repetition) snapping could otherwise cycle forever
+                    t = max(last + 16, t + d)
+                    if t >= L:
+                        break
+            m, pa = int(vpos[k]), int(vper[k])
+            # the next mark: the original's own spacing, scaled for the pitch wanted (unchanged pitch and timing give back the original)
+            gap = vpos[k + 1] - vpos[k] if k + 1 < len(vpos) and vpos[k + 1] - vpos[k] < 1.5 * pa else pa
+            step = max(16, int(round(gap / ratio[j])))
+            was_voiced = True
+        else:
+            m, pa, step = int(round(s)), HOP, HOP
+            if was_voiced:  # back to the hop grid
+                step = HOP - t % HOP or HOP
+            was_voiced = False
+        win = _HANN.get(pa)
+        if win is None:
+            win = _HANN[pa] = np.hanning(2 * pa + 1)
+        if trace is not None:
+            trace.append((t, m, pa, step))
+        y[pad + t - pa: pad + t + pa + 1] += xp[pad + m - pa: pad + m + pa + 1] * win
+        w[pad + t - pa: pad + t + pa + 1] += win
+        last = t
+        t += step
+    return (y / np.maximum(w, 0.5))[pad: pad + L]  # exact where grains line up with the original; lower pitch leaves shallow dips
+
+
+def filter_frames(y, ref_sp, ref_ap, ref_v, sp, ap, v, rng):
+    """Move y (whose frames have envelope ref_sp, aperiodicity ref_ap) to envelope sp and aperiodicity ap. The periodic part is scaled by a
+    filter; noise is added where the target is noisier than the source (breathiness, devoicing, lenition, breaths). WORLD's convention:
+    aperiodic power = sp * ap**2."""
+    from scipy.signal import stft, istft
+    nb = sp.shape[1]
+    nfft = 2 * (nb - 1)
+    _, _, Y = stft(y, SR, window="hann", nperseg=400, noverlap=400 - HOP, nfft=nfft, boundary="zeros", padded=True)
+    T = min(Y.shape[1], len(sp))
+    Y = Y[:, :T]
+    a_ref = np.where(ref_v[:T, None], np.clip(ref_ap[:T], 0, 1), 1.0) ** 2
+    a_mod = np.where(v[:T, None], np.clip(ap[:T], 0, 1), 1.0) ** 2
+    ratio = (sp[:T] + 1e-16) / (ref_sp[:T] + 1e-16)
+    h = np.clip((1 - a_mod + 1e-3) / (1 - a_ref + 1e-3), 0.0, 1.0)
+    g2 = np.clip(ratio * h, 1e-4, 100.0)
+    g2 = np.exp(gaussian_filter1d(np.log(g2), 1.0, axis=0))  # a little smoothing over time: no musical noise
+    # how STFT power relates to WORLD's envelope on this clip (one number), for the added noise
+    P = np.abs(Y.T) ** 2
+    e = ref_sp[:T].sum(1)
+    loud = e > np.quantile(e, 0.3)
+    c = np.median(P[loud].sum(1) / (e[loud] + 1e-16)) if loud.any() else 1.0
+    extra = np.maximum(0.0, sp[:T] * a_mod - g2 * ref_sp[:T] * a_ref)
+    win = np.hanning(400)
+    _, _, N = stft(rng.standard_normal(len(y)), SR, window="hann", nperseg=400, noverlap=400 - HOP, nfft=nfft, boundary="zeros", padded=True)
+    N = N[:, :T] / np.sqrt((win ** 2).sum() / win.sum() ** 2)  # unit expected power per bin, in scipy's scaling
+    Z = Y * np.sqrt(g2.T) + N * np.sqrt(c * extra.T)
+    _, z = istft(Z, SR, window="hann", nperseg=400, noverlap=400 - HOP, nfft=nfft, boundary=True)
+    return z[: len(y)] if len(z) >= len(y) else np.pad(z, (0, len(y) - len(z)))
+
+
+def render_transparent(x, orig, src, f0, sp, ap, rng, world_frames=None):
+    """x: the original clip (float). orig: its analysis (f0, sp, ap). src: each output frame's position in the original. f0, sp, ap: the
+    target frames. world_frames: output frames to take from WORLD (None: those voiced where the source is not)."""
+    f00, sp0, ap0 = orig
+    n0 = len(f00)
+    src = np.clip(src, 0, n0 - 1)
+    i = np.minimum(src.astype(int), max(0, n0 - 2))
+    w = (src - i)[:, None]
+    i1 = np.minimum(i + 1, n0 - 1)
+    ref_sp = np.exp(np.log(sp0[i] + 1e-16) * (1 - w) + np.log(sp0[i1] + 1e-16) * w)
+    ref_ap = ap0[i] * (1 - w) + ap0[i1] * w
+    ref_v = f00[np.round(src).astype(int)] > 0
+    v = f0 > 0
+    if world_frames is None:
+        world_frames = v & ~ref_v
+    ref_f0 = f00[np.round(src).astype(int)]
+    y = psola(x, pitch_marks(x, f00), src, np.where(v & ref_v, f0 / np.maximum(ref_f0, 1.0), 1.0), v & ref_v)
+    y = filter_frames(y, ref_sp, ref_ap, ref_v, sp, ap, v, rng)
+    if world_frames.any():
+        yw = synth(f0, sp, ap)
+        m = np.repeat(gaussian_filter1d(world_frames.astype(float), 1.5), HOP)
+        m = np.pad(m, (0, max(0, len(y) - len(m))))[: len(y)]
+        yw = np.pad(yw, (0, max(0, len(y) - len(yw))))[: len(y)]
+        y = y * (1 - m) + yw * m
+    return y
+
+
 # ------------------------------------------------------------------ traits: each takes the frame arrays and returns new ones
-def retime(f0, sp, ap, pos):
+def retime(f0, sp, ap, pos, var=0.8):
     """Resample the frames at fractional positions pos: spectra interpolated in log, pitch and aperiodicity follow."""
     pos = np.clip(pos, 0, len(f0) - 1)
     i = np.minimum(pos.astype(int), len(f0) - 2) if len(f0) > 1 else np.zeros(len(pos), int)
     w = (pos - i)[:, None]
     ls = np.log(sp + 1e-16)
-    # interpolated frames are smoother than real slow speech, which keeps its frame-to-frame variation (E5): put it back
-    out_sp = np.exp(ls[i] * (1 - w) + ls[i + 1] * w + 0.8 * np.random.default_rng(len(pos)).standard_normal(w.shape) * (4 * w * (1 - w))) if len(f0) > 1 else sp[i]
+    # interpolated frames are smoother than real slow speech, which keeps its frame-to-frame variation (E5): put it back (WORLD rendering
+    # only: the transparent renderer keeps the recording's own variation)
+    out_sp = np.exp(ls[i] * (1 - w) + ls[i + 1] * w + var * np.random.default_rng(len(pos)).standard_normal(w.shape) * (4 * w * (1 - w))) if len(f0) > 1 else sp[i]
     out_ap = ap[i] * (1 - w) + ap[i + 1] * w if len(f0) > 1 else ap[i]
     near = np.round(pos).astype(int)
     return f0[near], out_sp, out_ap
@@ -322,8 +466,11 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
     p = profile(cond, s, sp_rng)
     z = phonesim.profile(cond, s, sp_rng) if tg else None
     f0, sp, ap = analyze(x / 32768.0)
+    orig = (f0, sp, ap)
+    src = np.arange(len(f0), dtype=np.float64)  # each frame's position in the original, through every change of timing
     if tg:  # sound errors first, while the alignment still matches the frames
-        f0, sp, ap, errs = phonesim.apply(f0, sp, ap, phonesim.phone_frames(tg, len(f0), FPS), z, rng, warp_envelope)
+        f0, sp, ap, errs, k = phonesim.apply(f0, sp, ap, phonesim.phone_frames(tg, len(f0), FPS), z, rng, warp_envelope)
+        src = np.interp(k, np.arange(len(src)), src)
         if log is not None:
             log.extend(errs)
         p.update(omit=0.0, swap=0.0, devoice=0.0)
@@ -347,7 +494,7 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
     if p["omit"] or p["swap"] or p["devoice"]:
         f0, sp, ap, k = sound_errors(f0, sp, ap, seg, rng, p["omit"], p["swap"], p["devoice"])
         if len(k) < len(f0):
-            f0, sp, ap = f0[k], sp[k], ap[k]
+            f0, sp, ap, src = f0[k], sp[k], ap[k], src[k]
             seg = Seg(f0, sp)
 
     # --- resonance and voice source
@@ -398,19 +545,20 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
     # --- timing: rate, pauses, stoppages, stuttering events
     if p["slow"] != 1.0 or p["uneven"] or p["vowel_long"] != 1.0 or p["rushes"]:
         q = resample_rate(f0, sp, ap, seg, rng, p["slow"], p["uneven"], p["vowel_long"], p["rushes"])
-        f0, sp, ap = retime(f0, sp, ap, q)
+        f0, sp, ap = retime(f0, sp, ap, q, 0.8 if RENDER == "world" else 0.0)
+        src = np.interp(q, np.arange(len(src)), src)
         seg = Seg(f0, sp)
     floor = np.where(seg.e <= np.quantile(seg.e, 0.1))[0]
     cuts = {int(c): int(rng.integers(30, 120)) for c in seg.dips() if rng.random() < p["pause"]} if len(floor) and p["pause"] > 0 else {}
     if cuts:
         i = insert_pauses(None, seg.e, cuts, floor, rng)
-        f0, sp, ap = f0[i], sp[i], ap[i]
+        f0, sp, ap, src = f0[i], sp[i], ap[i], src[i]
         if p["breath"] > 0:
             sp, ap = add_breaths(f0, sp, ap, cuts, p["breath"], rng)
         seg = Seg(f0, sp)
     if p["rep"] or p["block"] or p["prolong"]:
         i = fluency(f0, sp, ap, seg, rng, p["rep"], p["block"], p["prolong"])
-        f0, sp, ap = f0[i], sp[i], ap[i]
+        f0, sp, ap, src = f0[i], sp[i], ap[i], src[i]
         seg = Seg(f0, sp)
     if p["stops"] > 0:  # the voice stops suddenly
         n = len(f0)
@@ -439,7 +587,10 @@ def simulate(x, cond, s, sp_rng, rng, tg=None, log=None):
             if a >= 10 and not v[a - 10:a].any() and rng.random() < p["hard_onset"]:
                 ap[a:a + 4] = np.maximum(ap[a:a + 4], 0.6)
                 sp[a:a + 4] = apply_tilt(sp[a:a + 4], 6.0) * 2.0
-    y = synth(f0, sp, ap)
+    if RENDER == "world":
+        y = synth(f0, sp, ap)
+    else:  # an artificial voice source has no counterpart in the recording: WORLD renders it
+        y = render_transparent(x / 32768.0, orig, src, f0, sp, ap, rng, np.ones(len(f0), bool) if p["source"] in ("el", "eso") else None)
     y = y * (level / (np.sqrt((y ** 2).mean()) + 1e-9))  # same level as the source, whatever the traits did: level is the training pipeline's business
     return np.clip(y, -32768, 32767).astype(np.int16)
 
@@ -477,7 +628,9 @@ def _job(a):
 
 
 _cache = {}
-def _init(real_errors):
+def _init(real_errors, render="transparent"):
+    global RENDER
+    RENDER = render
     if real_errors:
         phonesim.load_real(real_errors)
 
@@ -517,7 +670,7 @@ def gen(a):
     else:
         pos = 0
     t0, audio = time.time(), 0.0
-    with open(pack, "ab") as fp, open(man, "a", encoding="utf-8", newline="\n") as fm, mp.Pool(a.workers, initializer=_init, initargs=(a.real_errors,)) as pool:
+    with open(pack, "ab") as fp, open(man, "a", encoding="utf-8", newline="\n") as fm, mp.Pool(a.workers, initializer=_init, initargs=(a.real_errors, a.render)) as pool:
         for k, (it, cond, s, y) in enumerate(pool.imap(_work, ((it, a.seed, conds, sevs) for it in items[done:]), chunksize=8)):
             if y is None:
                 continue
@@ -560,5 +713,9 @@ if __name__ == "__main__":
     g.add_argument("--workers", type=int, default=6); g.add_argument("--seed", type=int, default=1); g.add_argument("--conditions", default=""); g.add_argument("--severity", default="0.2,1.0")
     g.add_argument("--real_errors", default="", help="real_errors.py output: sound errors from measured training speakers")
     g.add_argument("--align_dir", default="", help="phone alignments (TextGrid per utterance, e.g. zenodo.org/records/2619474): sound-level errors")
+    for q in (d, g):
+        q.add_argument("--render", default="transparent", choices=["transparent", "world"], help="transparent: change the recording itself (E16); "
+                       "world: resynthesize every frame with the WORLD vocoder (everything before E16)")
     a = ap.parse_args()
+    RENDER = a.render
     demo(a) if a.cmd == "demo" else gen(a)
