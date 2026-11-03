@@ -1308,6 +1308,15 @@ Off-list utterances: 5.0 % replaced by a phrase at every list size (by construct
 - The final event reports `"confidence":"phrase"`, and the console keeps the free text.
 - Checked on the board: 25 phrases loaded, still there after a reboot. Not yet checked with speech.
 
+### E19. Rotating the held-out TORGO speakers (queued 2026-11-02)
+
+Question:   do big6's and big7's gains hold when other TORGO speakers are held out, or are they specific to F03 and M05?
+Change:     only the TORGO split. Fold A is the official split (F03, M05, FC03, MC04). Fold B holds out F04 (mild), M04 (severe), FC01, MC01; fold C holds out M03 (mild), F01 (severe), FC02, MC02. M01 and M02 are in training in every fold.
+Recipe:     `train/runs/fold.cmd <fold> <speakers> <big6|big7>`: makes and packs the fold's manifests, scores the base model on the fold's test set, trains with the named run's settings, and scores TORGO (fold test), LibriSpeech and UASpeech, float greedy. `G:\cosgc\folds.cmd` runs B and C with both recipes after big10.
+Data:       no fold's test speakers in its training manifests. Caveat: the mel-level simulation (big7 recipe) was calibrated in E5 on fold A's training speakers, which include fold B's and C's test speakers: a small leak in the simulated arm only. UASpeech is test-only, as always.
+Measure:    per fold, WER change from base, and big7 against big6 (paired CI); the paper reports the mean over folds A–C.
+Result:     pending.
+
 ## 5. Findings so far, for the paper
 
 The list below covers E1–E14. Findings 17–36 are numbered in their entries. The consolidated claims the paper will make, each with its
