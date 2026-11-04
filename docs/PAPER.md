@@ -166,10 +166,11 @@ Finding:    one sentence for the paper (numbered).
 | Item | Why | Status |
 |---|---|---|
 | Rotate held-out TORGO speakers (e.g. 3 folds) for the final recipe | two test speakers are too few | planned |
-| 3 seeds for big6, big7 and the best simulated run | one seed per model | planned |
+| 3 seeds for big6, big7 and the best simulated run | one seed per model | queued: seeds 1 and 2 of big6 and big7 |
+| Simulation as a first stage, then big7's recipe (E20) | C7: does order rescue the simulator? | queued |
 | big10: 120 h of transparently rendered simulation, real exposure kept at big7's | C7, C8 | done (F45): no gain on dysarthric TORGO speakers; big7 stays deployed |
 | Rotate held-out TORGO speakers, folds B and C (E19) | two test speakers are too few | running (started 2026-11-03) |
 | Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
-| Teacher-student training from a fine-tuned Parakeet 1.1B (CC-BY-4.0) | more accuracy at 19 M | planned |
+| Teacher-student training from a fine-tuned Parakeet (CC-BY-4.0; 110 M, since 1.1 B does not fit a 12 GB card for training) (E21) | more accuracy at 19 M | queued; code smoke-tested |
 | Cite: TORGO (Rudzicz et al. 2012), UASpeech (Kim et al. 2008), LibriSpeech, MUSAN, Conformer, CTC, SpecAugment, WORLD (Morise et al. 2016), MFA (McAuliffe et al. 2017) and the LibriSpeech alignments (Lugosch et al. 2019), kNN-VC (Baas et al. 2023), Parakeet (NVIDIA), the SAP Challenge (Interspeech 2025), Oído | | add to log §8 |

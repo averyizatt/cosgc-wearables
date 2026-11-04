@@ -1382,6 +1382,48 @@ Void second launch (14:38–15:09):
 - Training crashed at its first batch, because the pack they point to had been moved. No model was trained.
 - `fold.cmd` now also stops before training if the packed training data holds any held-out speaker or points to a missing pack. The correct fold B list has 4233 dysarthric clips; the stale one had 4899.
 
+Partial result, fold B with big6's recipe (float, greedy; base model → fold model):
+
+| | full | chunk 64 |
+|---|---|---|
+| dysarthric (F04 + M04) | 55.55 → 41.02 | 61.30 → 47.79 |
+| F04 (mild) | 22.0 → 11.6 | 27.1 → 16.9 |
+| M04 (severe) | 89.8 → 71.0 | 96.1 → 79.3 |
+| control (FC01 + MC01) | 17.93 → 8.82 | 23.46 → 13.29 |
+
+Fold A for comparison: dysarthric 60.06 → 40.12, controls 16.98 → 9.32. Fold B's other sets: LibriSpeech 4.16; UASpeech dysarthric 86.73 / 94.29.
+
+### E20. The simulation as a first stage (queued 2026-11-03)
+
+Question:   does the waveform simulation help when it comes before the real data instead of mixed into it?
+Change:     big7's starting point only. Stage 1 trains base24x on simtr360 (E16) and LibriSpeech 100, 4000 steps of 100 s, no TORGO. Stage 2 is big7's recipe exactly, seed 0, started from stage 1.
+Recipe:     `train/runs/simpre.cmd` (simpre1, then simpre).
+Data:       no TORGO in stage 1; stage 2 as big7. No test speaker or UASpeech in anything fitted.
+Measure:    engine int8 + LM, TORGO test live and final, paired CI against big7; UASpeech and LibriSpeech float greedy; stage 1 alone on TORGO test.
+Why:        mixed in (big10), the simulation is separable from real speech (AUC 0.99), so the model can learn it as its own kind of speech. A first stage cannot be separated from what comes after.
+Result:     pending.
+
+### E21. A Parakeet teacher (queued 2026-11-03)
+
+Question:   does a larger model, fine-tuned on the same data, make the 19 M model better when its posteriors are a second training target?
+Teacher:    `train/teacher_ft.py`. nvidia/parakeet-tdt_ctc-110m (109 M parameters, CC-BY-4.0): its encoder and NeMo feature front end, our 1024-piece tokenizer, a new CTC head (blank last, as in the student), fine-tuned on big6's data, 6000 steps of 100 s, learning rate 1e-4, head 10 × faster, SpecAugment and our noise, reverb and speed augmentation. The 1.1 B model does not fit a 12 GB card for training.
+Student:    big11 = big7's recipe exactly, plus a frame-level KL to the teacher on full-context batches (`train_nemo_stream.py --teacher`):
+- weight 0.5, temperature 2 (scaled by T²);
+- the teacher's 80 ms frames are repeated to the student's 40 ms;
+- shifted by the offset `teacher_ft.py offset` measures against big7; a shift beyond 4 frames stops the run;
+- clips changed by the mel-level simulation are left out (the teacher hears the waveform).
+Recipe:     `train/runs/teacher.cmd`.
+Data:       as big7; the teacher sees only big6's training data.
+Measure:    the teacher on TORGO test, LibriSpeech and UASpeech (float, greedy, full context); big11 as E20, against big7.
+Checked:    CPU smoke test on 24 TORGO training clips (laptop, NeMo 3.0.0, torch 2.6.0): teacher training, scoring, offset, and student training with and without the teacher all run.
+Result:     pending.
+
+### Seeds (queued 2026-11-03)
+
+big6 and big7 with seeds 1 and 2 (`big6.cmd 1`, `big7.cmd 2`, ...; `train_nemo_stream.py --seed` changes batch order, masks and chunk choices; seed 0 reproduces the original runs). Measure: the spread of engine WER across seeds, and whether big7 against big6 holds for every seed.
+
+Queue on the PC (`G:\cosgc\queue2.cmd`, after the folds): simpre, teacher, big6 seed 1, big7 seed 1, big6 seed 2, big7 seed 2.
+
 ## 5. Findings so far, for the paper
 
 The list below covers E1–E14. Findings 17–36 are numbered in their entries. The consolidated claims the paper will make, each with its

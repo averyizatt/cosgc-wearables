@@ -238,13 +238,20 @@ def main():
     ap.add_argument("--dys_sources", default="torgo", help="manifest sources that are already atypical (never distorted)")
     ap.add_argument("--dys_severity", default="", help="lo,hi: simdys version 2 with severity uniform in [lo, hi] "
                     "(e.g. 0.2,1.0); empty: version 1")
+    ap.add_argument("--seed", type=int, default=0, help="training seed (batch order, masks, chunk choices); 0 reproduces earlier runs")
+    ap.add_argument("--teacher", default="", help="teacher_ft.py teacher.pt (same tokenizer): its posteriors teach full-context batches; "
+                    "needs NeMo (run in nemovenv)")
+    ap.add_argument("--teacher_kd", type=float, default=0.5, help="weight of the teacher's frame-level KL")
+    ap.add_argument("--teacher_T", type=float, default=2.0, help="temperature for teacher and student in the KL")
+    ap.add_argument("--teacher_shift", type=int, default=0,
+                    help="student frames by which the teacher's posteriors lag the student's (teacher_ft.py offset measures it)")
     a = ap.parse_args()
     dys_src = set(a.dys_sources.split(","))
     dys_sev = tuple(float(v) for v in a.dys_severity.split(",")) if a.dys_severity else None
     assert not a.p_dys or a.stream, "--p_dys needs the fixed normalization of --stream"
-    dev = "cuda"
+    dev = "cuda" if torch.cuda.is_available() else "cpu"  # cpu only for smoke tests
     os.makedirs(a.out, exist_ok=True)
-    torch.manual_seed(0); random.seed(0)
+    torch.manual_seed(a.seed); random.seed(a.seed)
     sd = torch.load(f"{a.nemo}/state_dict_plain.pt", map_location="cpu")
     base = NemoSmall(sd)
     tok = a.tokenizer or f"{a.nemo}/tokenizer.model"
@@ -299,6 +306,14 @@ def main():
         model.m.load_state_dict(ck["model"]); ema.m.load_state_dict(ck["ema"]); opt.load_state_dict(ck["opt"])
         step = ck["step"]
         print("resumed at step", step, flush=True)
+    teacher = None
+    if a.teacher:
+        from teacher_ft import load_teacher
+        teacher = load_teacher(a.teacher, dev)
+        for p in teacher.parameters():
+            p.requires_grad_(False)
+        assert teacher.head.out_features == V + 1, "teacher and student vocabularies differ"
+        print("teacher", a.teacher, "weight", a.teacher_kd, "T", a.teacher_T, "shift", a.teacher_shift, flush=True)
     aug = None
     if a.aug_dir:
         from augment import NpAug
@@ -342,12 +357,13 @@ def main():
     if step == 0:
         report("init", model)
     model.train()
-    sampler = BucketBatchSampler(items, a.batch_sec, seed=1)
+    sampler = BucketBatchSampler(items, a.batch_sec, seed=1 + a.seed)
     ep, t0, ag = step // max(1, len(sampler)), time.time(), 0.0
+    akd, nkd = 0.0, 0
     while step < a.steps:
         sampler.set_epoch(ep)
         dl = DataLoader(AugDataset(items, aug), batch_sampler=sampler, collate_fn=collate, num_workers=a.workers,
-                        pin_memory=True, prefetch_factor=4, persistent_workers=False)
+                        pin_memory=True, prefetch_factor=4 if a.workers else None, persistent_workers=False)
         for wav, lens, tokb, tl, idx in dl:
             wav = wav.to(dev).float() / 32768.0
             lens, tokb, tl = lens.to(dev), tokb.to(dev), tl.to(dev)
@@ -355,6 +371,7 @@ def main():
                 if a.stream:  # random gain: fixed normalization must not depend on the recording level
                     wav = wav * (10.0 ** (torch.empty(wav.shape[0], 1, device=dev).uniform_(-12, 12) / 20.0))
                 f, fl = pre(wav, lens)
+                sel = torch.zeros(wav.shape[0], dtype=torch.bool)
                 if a.p_dys:  # simulated dysarthria on typical speech only (not on clips from --dys_sources)
                     sel = torch.tensor([items[j]["src"] not in dys_src and random.random() < a.p_dys for j in idx.tolist()])
                     f, fl = simulate(f, fl, sel, pre.mean, pre.std, severity=dys_sev)
@@ -379,6 +396,27 @@ def main():
                 valid = (torch.arange(lp.shape[1], device=dev)[None] < ol[:, None]).float()
                 kl = (tp.exp() * (tp - lp)).sum(-1)
                 loss = loss + a.kd * (kl * valid).sum() / valid.sum()
+            if teacher is not None and not chunk:
+                # the teacher hears the waveform (before the mel-level simulation and the masks), so clips the simulation
+                # changed are left out; its 80 ms frames are repeated to the student's 40 ms
+                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    tg, tlen = teacher(wav, lens)
+                Tk = a.teacher_T
+                tq = (tg.float() / Tk).log_softmax(-1).repeat_interleave(2, 1)
+                tlen = tlen * 2
+                s = a.teacher_shift
+                if s > 0:
+                    tq, tlen = F.pad(tq[:, s:], (0, 0, 0, s)), tlen - s
+                elif s < 0:
+                    tq, tlen = F.pad(tq, (0, 0, -s, 0)), tlen - s
+                Tn = lp.shape[1]
+                tq = F.pad(tq, (0, 0, 0, max(0, Tn - tq.shape[1])))[:, :Tn]
+                ls = (lg.float() / Tk).log_softmax(-1)
+                valid = ((torch.arange(Tn, device=dev)[None] < torch.minimum(ol, tlen)[:, None]) & ~sel.to(dev)[:, None]).float()
+                kl = (tq.exp() * (tq - ls)).sum(-1)
+                kd_t = a.teacher_kd * Tk * Tk * (kl * valid).sum() / valid.sum().clamp(min=1.0)
+                loss = loss + kd_t
+                akd, nkd = akd + kd_t.item(), nkd + 1
             lr = a.lr * min(1.0, (step + 1) / a.warmup) * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(1.0, step / a.steps))))
             for g in opt.param_groups:
                 g["lr"] = lr
@@ -393,8 +431,9 @@ def main():
             step += 1
             ag += loss.item()
             if step % 100 == 0:
-                print(f"step {step} loss {ag/100:.4f} lr {lr:.2e} {time.time()-t0:.0f}s", flush=True)
-                ag = 0.0
+                kd_msg = f" (teacher term {akd / max(1, nkd):.4f} on {nkd} batches)" if teacher is not None else ""
+                print(f"step {step} loss {ag/100:.4f} lr {lr:.2e} {time.time()-t0:.0f}s" + kd_msg, flush=True)
+                ag, akd, nkd = 0.0, 0.0, 0
             if step % a.save_every == 0:
                 save()
             if step % a.val_every == 0:
