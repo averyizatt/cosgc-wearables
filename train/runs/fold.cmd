@@ -35,12 +35,12 @@ if not exist %P%\%T%_dys_x8.jsonl %PY% -c "import json;L=[l for l in open(r'%P%\
 %PY% -c "import json,os,sys;h=set('%H%'.split(','));R=[json.loads(l) for f in (r'%P%\%T%_train.jsonl',r'%P%\%T%_dys_x8.jsonl') for l in open(f,encoding='utf8')];bad=sorted({r['speaker'] for r in R}&h);miss=sorted({r['pack'] for r in R if not os.path.exists(r['pack'])});print('packed training: test speakers',bad,'missing packs',miss);sys.exit(bool(bad or miss))" || (echo packed training data is stale & exit /b 1)
 if not exist %E%\eval\base_%T%_test.json %PY% eval_manifest.py --nemo %E%\base24x --ckpt %E%\base24x\init.pt --manifest %D%\%T%_test.jsonl --out %E%\eval\base_%T%_test.json
 set O=%E%\fold%F%_%R%
-if not exist %O%\last.pt start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\base24x\init.pt --keep_head ^
+if not exist %O%\done start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\base24x\init.pt --keep_head ^
   --train %P%\ls100_train.jsonl,%P%\%T%_train.jsonl,%P%\%T%_train.jsonl,%P%\%T%_dys_x8.jsonl ^
   --val %D%\%T%_test.jsonl,%D%\ls_testclean_train.jsonl --out %O% ^
   --stream --chunks 32,64 --lefts 64,128 --p_full 0.5 --val_chunk 64 --val_left 128 ^
   --kd 0 --lr 5e-5 --warmup 300 %X% --save_every 250 ^
   --aug_dir %D%\aug --p_speed 0.3 --workers 2 >> %E%\fold%F%_%R%.log 2>&1
-if not exist %O%\last.pt (echo training failed & exit /b 1)
+if not exist %O%\done (echo training failed & exit /b 1)
 for %%M in (%T%_test ls_testclean_train uaspeech_test_b2) do %PY% eval_manifest.py --nemo %E%\base24x --ckpt %O%\last.pt --init %E%\base24x\init.pt --manifest %D%\%%M.jsonl --out %E%\eval\fold%F%_%R%_%%M.json
 echo DONE

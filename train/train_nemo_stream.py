@@ -442,6 +442,8 @@ def main():
                 break
         ep += 1
     save(final=True)
+    with open(f"{a.out}/done", "w") as f:  # last.pt is rewritten at every save; only this marks a finished run
+        f.write(f"{step}\n")
     report("final EMA", ema)
 
 

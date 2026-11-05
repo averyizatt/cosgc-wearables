@@ -21,7 +21,7 @@ start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --in
   --stream --chunks 32,64 --lefts 64,128 --p_full 0.5 --val_chunk 64 --val_left 128 ^
   --kd 0 --lr 5e-5 --warmup 300 --steps 4000 --batch_sec 150 --val_every 500 --save_every 250 %SEED% ^
   --aug_dir %D%\aug --p_speed 0.3 --workers 2 >> %E%\%N%.log 2>&1
-if not exist %E%\%N%\last.pt (echo training failed & exit /b 1)
+if not exist %E%\%N%\done (echo training failed & exit /b 1)
 for %%M in (torgo_test ls_testclean_train uaspeech_test_b2) do %PY% eval_manifest.py --nemo %E%\base24x --ckpt %E%\%N%\last.pt --init %E%\base24x\init.pt --manifest %D%\%%M.jsonl --out %E%\eval\%N%_%%M.json
 %PY% export_nemo.py %E%\base24x %E%\%N%\%N%_int8.tnm 8 %E%\%N%\last.pt
 echo DONE

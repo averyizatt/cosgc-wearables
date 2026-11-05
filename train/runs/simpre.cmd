@@ -14,21 +14,21 @@ set E=G:\cosgc\exp
 set S=G:\cosgc\exp\sim
 set P=%D%\packed
 set PY=G:\cosgc\venv\Scripts\python.exe -u
-if not exist %E%\simpre1\last.pt start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\base24x\init.pt --keep_head ^
+if not exist %E%\simpre1\done start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\base24x\init.pt --keep_head ^
   --train %P%\ls100_train.jsonl,%S%\simtr360.jsonl ^
   --val %D%\torgo_test.jsonl,%D%\ls_testclean_train.jsonl --out %E%\simpre1 ^
   --stream --chunks 32,64 --lefts 64,128 --p_full 0.5 --val_chunk 64 --val_left 128 ^
   --kd 0 --lr 5e-5 --warmup 300 --steps 4000 --batch_sec 100 --max_dur 32 --val_every 1000 --save_every 250 ^
   --aug_dir %D%\aug --p_speed 0.3 --workers 2 >> %E%\simpre1.log 2>&1
-if not exist %E%\simpre1\last.pt (echo stage 1 training failed & exit /b 1)
-if not exist %E%\simpre\last.pt start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\simpre1\last.pt --keep_head ^
+if not exist %E%\simpre1\done (echo stage 1 training failed & exit /b 1)
+if not exist %E%\simpre\done start "" /belownormal /b /wait %PY% train_nemo_stream.py --nemo %E%\base24x --init %E%\simpre1\last.pt --keep_head ^
   --train %P%\ls100_train.jsonl,%P%\torgo_train.jsonl,%P%\torgo_train.jsonl,%P%\torgo_dys_x8.jsonl ^
   --val %D%\torgo_test.jsonl,%D%\ls_testclean_train.jsonl --out %E%\simpre ^
   --stream --chunks 32,64 --lefts 64,128 --p_full 0.5 --val_chunk 64 --val_left 128 ^
   --kd 0 --lr 5e-5 --warmup 300 --steps 6000 --batch_sec 100 --val_every 750 --save_every 250 ^
   --p_dys 0.3 --dys_severity 0.2,1.0 ^
   --aug_dir %D%\aug --p_speed 0.3 --workers 2 >> %E%\simpre.log 2>&1
-if not exist %E%\simpre\last.pt (echo training failed & exit /b 1)
+if not exist %E%\simpre\done (echo training failed & exit /b 1)
 for %%M in (torgo_test ls_testclean_train uaspeech_test_b2) do %PY% eval_manifest.py --nemo %E%\base24x --ckpt %E%\simpre\last.pt --init %E%\base24x\init.pt --manifest %D%\%%M.jsonl --out %E%\eval\simpre_%%M.json
 %PY% eval_manifest.py --nemo %E%\base24x --ckpt %E%\simpre1\last.pt --init %E%\base24x\init.pt --manifest %D%\torgo_test.jsonl --out %E%\eval\simpre1_torgo_test.json
 %PY% export_nemo.py %E%\base24x %E%\simpre\simpre_int8.tnm 8 %E%\simpre\last.pt
