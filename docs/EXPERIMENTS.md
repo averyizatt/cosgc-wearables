@@ -1368,7 +1368,7 @@ Change:     only the TORGO split. Fold A is the official split (F03, M05, FC03, 
 Recipe:     `train/runs/fold.cmd <fold> <speakers> <big6|big7>`: makes and packs the fold's manifests, scores the base model on the fold's test set, trains with the named run's settings, and scores TORGO (fold test), LibriSpeech and UASpeech, float greedy. `G:\cosgc\folds.cmd` runs B and C with both recipes after big10.
 Data:       no fold's test speakers in its training manifests. Caveat: the mel-level simulation (big7 recipe) was calibrated in E5 on fold A's training speakers, which include fold B's and C's test speakers: a small leak in the simulated arm only. UASpeech is test-only, as always.
 Measure:    per fold, WER change from base, and big7 against big6 (paired CI); the paper reports the mean over folds A–C.
-Result:     pending. Running since 2026-11-03 15:10; order B big6, C big6, B big7, C big7.
+Result:     done 2026-11-05 03:54 (third launch, from 2026-11-03 15:10; order B big6, C big6, B big7, C big7). Results below the two void launches.
 Void first launch (07:21–14:35):
 - `fold.cmd` took the speaker list unquoted, and cmd splits arguments at commas.
 - Each fold held out only its first speaker (B: F04, C: M03), and the recipe argument became a speaker name.
@@ -1382,16 +1382,53 @@ Void second launch (14:38–15:09):
 - Training crashed at its first batch, because the pack they point to had been moved. No model was trained.
 - `fold.cmd` now also stops before training if the packed training data holds any held-out speaker or points to a missing pack. The correct fold B list has 4233 dysarthric clips; the stale one had 4899.
 
-Partial result, fold B with big6's recipe (float, greedy; base model → fold model):
+Interruption (fold B, big7 recipe):
+- Stopped at step 3800 on 2026-11-03 at about 21:40, at the user's request (RAM needed).
+- The PC's CPU and motherboard were then replaced (Ryzen 5 1600 → 5500, same GPU and RAM).
+- Resumed from the step-3750 checkpoint on 2026-11-05 at 01:01.
+- On resume the trainer restarts the batch order of the current epoch, so this run's data order differs from an uninterrupted one.
+- Restarting exposed a bug: `last.pt` is rewritten at every save, and the run scripts took it to mean "finished". A plain restart would have skipped the last 2250 steps and scored the partial model. The trainer now writes `out/done` after its final save, and every run script checks for that instead (commit 680b900).
+- Speed on the same run, median of 100-step blocks without validation: 1.33 s/step before the swap, 0.86 after (about 1.5 ×). Training here is partly CPU-bound.
 
-| | full | chunk 64 |
-|---|---|---|
-| dysarthric (F04 + M04) | 55.55 → 41.02 | 61.30 → 47.79 |
-| F04 (mild) | 22.0 → 11.6 | 27.1 → 16.9 |
-| M04 (severe) | 89.8 → 71.0 | 96.1 → 79.3 |
-| control (FC01 + MC01) | 17.93 → 8.82 | 23.46 → 13.29 |
+Results, float greedy (`G:\cosgc\foldsum.py`). Each fold's models are scored only on that fold's held-out speakers. WER is full context / chunk 64:
 
-Fold A for comparison: dysarthric 60.06 → 40.12, controls 16.98 → 9.32. Fold B's other sets: LibriSpeech 4.16; UASpeech dysarthric 86.73 / 94.29.
+| Fold: dysarthric test / control test | base, dysarthric | big6, dysarthric | big7, dysarthric | base, control | big6, control | big7, control |
+|---|---|---|---|---|---|---|
+| A: F03, M05 / FC03, MC04 | 60.06 | 40.12 / 51.24 | 39.11 / 50.60 | 16.98 | 9.32 / 14.38 | 8.75 / 14.06 |
+| B: F04, M04 / FC01, MC01 | 55.55 / 61.30 | 41.02 / 47.79 | 41.19 / 46.77 | 17.93 / 23.46 | 8.82 / 13.29 | 8.03 / 12.04 |
+| C: M03, F01 / FC02, MC02 | 29.70 / 35.26 | 18.93 / 24.98 | 19.27 / 24.20 | 17.78 / 22.34 | 9.73 / 13.51 | 8.99 / 12.61 |
+| mean of folds, full | 48.44 | 33.36 | 33.19 | 17.56 | 9.29 | 8.59 |
+
+Base → big6, dysarthric speakers, full context:
+- A: −19.9 points (33 % relative). B: −14.5 (26 %). C: −10.8 (36 %).
+- Per speaker: F04 22.0 → 11.6, M04 89.8 → 71.0, M03 15.3 → 7.2, F01 79.1 → 59.0. Fold A: F03 32.3, M05 54.9 after training.
+- Severe speakers stay high in every fold: M05 52.6–54.9, F01 59.0–59.4, M04 71.0–71.4.
+
+Other sets, big6 / big7:
+- LibriSpeech test-clean: A 4.08 / 4.19, B 4.16 / 4.11, C 4.07 / 4.23.
+- UASpeech dysarthric, full: A 89.41 / 89.90, B 86.73 / 87.54, C 86.21 / 87.04. big7 is 0.5–0.8 worse in every fold.
+- UASpeech controls, full: A 39.57 / 37.29, B 40.11 / 40.14, C 41.51 / 39.72.
+
+big7 against big6, paired bootstrap (`train/paired_ci.py`), change in WER points:
+- Per fold, dysarthric speakers, full context: A −1.01 (CI −1.95..−0.16), B +0.17 (−0.79..+1.08), C +0.34 (−0.33..+1.01).
+- Pooled over all three folds: 13 366 clips, all 12 TORGO speakers, each scored by models that never trained on them.
+
+| Pooled | full: big6 → big7 | CI | chunk 64: big6 → big7 | CI |
+|---|---|---|---|---|
+| all | 17.17 → 16.61 | −0.78..−0.34 | 22.82 → 22.05 | −1.05..−0.50 |
+| control | 9.33 → 8.64 | −0.91..−0.48 | 13.79 → 13.02 | −1.08..−0.47 |
+| dysarthric | 35.02 → 34.75 | −0.76..+0.24 | 43.40 → 42.59 | −1.38..−0.22 |
+
+The leak noted under Data favours big7 in folds B and C, which makes their null results on dysarthric final text conservative. One seed per fold and recipe.
+
+**Finding 46:** the fine-tune's gain is not specific to the official split.
+- With each of three disjoint sets of dysarthric speakers held out, big6's recipe lowers their WER by 11–20 points (26–36 % relative), and controls' by about half.
+- LibriSpeech stays at 4.1–4.2 in every fold.
+- Severe speakers stay above 50 % in every fold.
+
+**Finding 47:** the mel-level simulation's gain (big7 over big6) holds across folds for control speakers (final −0.7, CI −0.9..−0.5) and for dysarthric speakers' live text (chunk 64, −0.8, CI −1.4..−0.2).
+- Its final-text gain on dysarthric speakers came from fold A alone, mostly M05. Pooled over all 12 speakers it is −0.27, CI −0.76..+0.24.
+- On UASpeech's dysarthric speakers, big7 is slightly worse in every fold.
 
 ### E20. The simulation as a first stage (queued 2026-11-03)
 
@@ -1422,7 +1459,7 @@ Result:     pending.
 
 big6 and big7 with seeds 1 and 2 (`big6.cmd 1`, `big7.cmd 2`, ...; `train_nemo_stream.py --seed` changes batch order, masks and chunk choices; seed 0 reproduces the original runs). Measure: the spread of engine WER across seeds, and whether big7 against big6 holds for every seed.
 
-Queue on the PC (`G:\cosgc\queue2.cmd`, after the folds): simpre, teacher, big6 seed 1, big7 seed 1, big6 seed 2, big7 seed 2.
+Queue on the PC: simpre, teacher, big6 seed 1, big7 seed 1, big6 seed 2, big7 seed 2. Originally `G:\cosgc\queue2.cmd`; since 2026-11-05 `G:\cosgc\resume.cmd`, which finished the folds first. Started 03:54 that day.
 
 ## 5. Findings so far, for the paper
 

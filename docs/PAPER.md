@@ -13,8 +13,9 @@ A 19 M-parameter streaming Conformer-CTC model runs offline on an ESP32-P4 micro
 shows live text while the user holds a button, then a full-context transcript, with a confidence mark. Fine-tuning on about 10 h of public
 dysarthric speech (TORGO) plus LibriSpeech lowers word error on unseen TORGO speakers from 37.4 % to 17.0 %. Over the same steps,
 dysarthric speakers go from 68.4 % to 35.4 %. Several of the steps are engineering rather than data: growing the model, the int8 export
-grid, full-context final text. Simulated dysarthric speech is our route to more training data than the public corpora hold; first results
-are small but positive. An untuned 1.1 B-parameter model (Parakeet-TDT) is no better on dysarthric speakers than ours. All results use
+grid, full-context final text. The gain holds when every TORGO speaker is held out in turn. Simulated dysarthric speech is our route to more training data than the
+public corpora hold. So far it helps a little: on control speakers, and on dysarthric speakers' live text, but not on their final
+text. An untuned 1.1 B-parameter model (Parakeet-TDT) is no better on dysarthric speakers than ours. All results use
 held-out speakers. TORGO's prompt overlap is reported, not hidden.
 
 Figures: `docs/figures/make_figures.py` regenerates every figure from the numbers in this file. Figure 2 `fig_ladder` (table 1), figure 3
@@ -88,7 +89,8 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | C4 | The int8 loss of fine-tunes came from the export grid, not from 8 bits: rounding on the parent model's grid discarded 77–88 % of the weight change; another grid keeps 99 %. | E8b, E10 (F18, F21) | solid |
 | C5 | Context is the largest lever on the device: full-context final text cuts WER from 25.1 to 19.8 % (dysarthric 51.2 → 42.2), and the P4 computes it in about 0.64 × the utterance. | E12 (F23) | solid |
 | C6 | The share of dysarthric audio matters up to about 26 %; beyond that the gain is one speaker and unfamiliar words get worse. | E13, E14 (F25, F31) | solid |
-| C7 | Simulated dysarthria helps slightly at 24 layers (−0.7 points, CI excludes zero) without the UASpeech cost of more real data; it did not help at 16 layers. Scaling it up to 100 source hours of waveform simulation with real exposure held fixed does not help TORGO's dysarthric speakers (35.43 → 35.41). It moves the model toward unseen dysarthric speech (UASpeech dysarthric −1.6 to −2.5 points) and away from unseen typical speech (UASpeech controls +1.5). | E4, E15, E16 (F11, F33, F38, F45) | tentative (one seed); the large-scale result is solid for this simulator |
+| C7 | Mel-level simulated dysarthria helps slightly at 24 layers. Over three folds (all 12 TORGO speakers held out in turn), it lowers final WER by 0.6 points (CI −0.8..−0.3). That gain comes from control speakers and from dysarthric speakers' live text (−0.8, CI −1.4..−0.2), not their final text (−0.3, CI −0.8..+0.2; fold A's −1.0 did not replicate). It did not help at 16 layers. Scaling up to 100 source hours of waveform simulation, real exposure held fixed, does not help TORGO's dysarthric speakers (35.43 → 35.41). That larger dose moves the model toward unseen dysarthric speech (UASpeech dysarthric −1.6 to −2.5 points) and away from unseen typical speech (UASpeech controls +1.5). | E4, E15, E16, E19 (F11, F33, F38, F45, F47) | solid across folds (one seed per fold); the large-scale result is solid for this simulator |
+| C16 | The fine-tune's gain is not specific to the official split. With each of three disjoint sets of dysarthric speakers held out, it lowers their WER by 11–20 points (26–36 % relative; mean over folds 48.4 → 33.4, float greedy). Controls go 17.6 → 9.3 and LibriSpeech stays at 4.1–4.2. Severe speakers stay above 50 % in every fold. | E19 (F46) | solid (3 folds, one seed each) |
 | C8 | A signal-level simulator matches real dysarthric speech on rate, pausing, rhythm and spectral tilt; with sound-level errors from phone alignments and measured error tables, its dysarthria conditions span every TORGO training speaker by WER (severity 0.3–1.5). It is still separable from real dysarthric speech (AUC 0.99) and sounds less dysarthric to a probe than real severe speech. | E5, E15, E16 (F32, F39, F43) | solid (measurement); in training it does not help TORGO's dysarthric speakers (big10, F45) |
 | C9 | Size alone does not solve dysarthric speech: an untuned 1.1 B model scores 90.7 % on UASpeech dysarthric speakers (ours 94.9) and 23.1 % on TORGO test (ours 18.5, float greedy, prompt-familiar). | E15 (F35) | solid |
 | C10 | The model's own token posteriors flag errors: AUC 0.894; utterances marked "sure" (54 %) are 95 % fully right, "probably wrong" (24 %) 27 %. | E17 (F36) | solid on TORGO; device microphone pending |
@@ -128,7 +130,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 
 ## 8. Threats to validity (keep current)
 
-- **Two dysarthric test speakers.** Report per speaker and with intervals. Planned: rotate which TORGO speakers are held out (several shorter runs), and report the mean.
+- **Two dysarthric test speakers.** Report per speaker and with intervals. Addressed for big6 and big7 by three folds that hold out all 12 TORGO speakers in turn (E19, C16, float greedy). Table 1's device numbers are still fold A only. A small leak: big7's simulation settings were calibrated on speakers that folds B and C hold out.
 - **Prompt overlap.** 99 % of TORGO test clips use training prompts. UASpeech and LibriSpeech carry the unfamiliar-material check.
 - **One seed per model.** Before submission, three seeds for rows 5–7.
 - **Early validation on test speakers.** E1–E3 chose settings while watching test-speaker validation clips. Rows 2 onward keep those settings; say so.
@@ -165,11 +167,10 @@ Finding:    one sentence for the paper (numbered).
 
 | Item | Why | Status |
 |---|---|---|
-| Rotate held-out TORGO speakers (e.g. 3 folds) for the final recipe | two test speakers are too few | planned |
 | 3 seeds for big6, big7 and the best simulated run | one seed per model | queued: seeds 1 and 2 of big6 and big7 |
 | Simulation as a first stage, then big7's recipe (E20) | C7: does order rescue the simulator? | queued |
 | big10: 120 h of transparently rendered simulation, real exposure kept at big7's | C7, C8 | done (F45): no gain on dysarthric TORGO speakers; big7 stays deployed |
-| Rotate held-out TORGO speakers, folds B and C (E19) | two test speakers are too few | running (started 2026-11-03) |
+| Rotate held-out TORGO speakers, folds B and C (E19) | two test speakers are too few | done 2026-11-05 (F46, F47): the fine-tune's gain holds in every fold; big7's gain over big6 holds for controls and live text, not dysarthric final text |
 | Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
 | Teacher-student training from a fine-tuned Parakeet (CC-BY-4.0; 110 M, since 1.1 B does not fit a 12 GB card for training) (E21) | more accuracy at 19 M | queued; code smoke-tested |
