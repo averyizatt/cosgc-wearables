@@ -1491,6 +1491,45 @@ big6 and big7 with seeds 1 and 2 (`big6.cmd 1`, `big7.cmd 2`, ...; `train_nemo_s
 
 Queue on the PC: simpre, teacher, big6 seed 1, big7 seed 1, big6 seed 2, big7 seed 2. Originally `G:\cosgc\queue2.cmd`; since 2026-11-05 `G:\cosgc\resume.cmd`, which finished the folds first. Started 03:54 that day.
 
+Ran 2026-11-05 on the PC with the new CPU, after simpre and the failed teacher. Finish times: big6_s1 08:42, big7_s1 10:53, big6_s2 12:33, big7_s2 14:57 (QUEUEDONE). Each run is the original recipe exactly (6000 steps for big7), only `--seed` differs. Engine scoring on the laptop as for table 1 (`big6eval.sh`, beam 4 + LM, int8 max/121). Float scoring by the run scripts (`G:\cosgc\exp\eval\<model>_{torgo_test,uaspeech_test_b2,ls_testclean_train}.json`).
+
+Engine, TORGO test, WER all / control / dysarthric:
+
+| Model | Seed | Final (full) | Live (chunk 32) |
+|---|---|---|---|
+| big6 | 0 | 17.74 / 8.89 / 36.56 | 23.86 / 13.01 / 46.92 |
+| big6 | 1 | 17.32 / 8.55 / 35.96 | 23.21 / 12.22 / 46.57 |
+| big6 | 2 | 17.46 / 8.71 / 36.07 | 23.33 / 12.55 / 46.25 |
+| big6 | mean ± sd | 17.51 ± 0.21 / 8.72 ± 0.17 / 36.20 ± 0.32 | 23.47 ± 0.35 / 12.60 ± 0.40 / 46.58 ± 0.33 |
+| big7 | 0 (on the board) | 17.03 / 8.37 / 35.43 | 23.31 / 12.65 / 45.99 |
+| big7 | 1 | 16.99 / 8.55 / 34.92 | 23.49 / 12.83 / 46.16 |
+| big7 | 2 | 16.94 / 8.40 / 35.08 | 23.02 / 12.45 / 45.49 |
+| big7 | mean ± sd | 16.98 ± 0.04 / 8.44 ± 0.10 / 35.14 ± 0.26 | 23.27 ± 0.24 / 12.64 ± 0.19 / 45.88 ± 0.35 |
+
+big7 against big6, same seed, engine, paired CI (B − A):
+
+| Seed | Final, all | Final, dysarthric | Live, control | Live, dysarthric |
+|---|---|---|---|---|
+| 0 | −0.71 | −1.13 (−2.09..−0.24) | −0.36 (−0.84..+0.09) | −0.93 (−1.91..+0.07) |
+| 1 | −0.33 | −1.04 (−1.96..−0.22) | +0.61 (+0.12..+1.13) | −0.41 (−1.37..+0.53) |
+| 2 | −0.52 | −0.99 (−1.96..−0.04) | −0.10 (−0.51..+0.29) | −0.76 (−1.74..+0.19) |
+
+Pooled over seeds: each clip's edits summed over the three seeds of a model, then paired_ci.py over clips (`train/pool_seeds.py`; this compares the seed-mean models and resamples clips only, not seeds).
+
+| | Final (full) | Live (chunk 32) |
+|---|---|---|
+| all | 17.51 → 16.98, −0.53 (−0.75..−0.28) | 23.47 → 23.27, −0.20 (−0.46..+0.09) |
+| control | 8.72 → 8.44, −0.28 (−0.48..−0.09) | 12.60 → 12.64, +0.04 (−0.23..+0.34) |
+| dysarthric | 36.20 → 35.14, −1.06 (−1.65..−0.47) | 46.58 → 45.88, −0.70 (−1.31..−0.09) |
+| F03 | 30.17 → 29.63 (−1.25..+0.08) | 39.32 → 39.17 (−0.84..+0.56) |
+| M05 | 47.60 → 45.58 (−2.99..−0.99) | 60.32 → 58.57 (−2.77..−0.80) |
+| FC03 | 8.22 → 7.87 (−0.62..−0.10) | 12.29 → 11.82 (−0.82..−0.11) |
+| MC04 | 9.32 → 9.14 (−0.51..+0.12) | 12.97 → 13.65 (+0.18..+1.18) |
+
+Float, greedy, mean ± sd over the three seeds (big6 → big7): TORGO dysarthric full 39.75 ± 0.40 → 38.94 ± 0.15 (big7 lower for every seed: −1.01, −0.92, −0.48); TORGO control full 9.16 → 8.85; UASpeech B2 control full 39.02 ± 0.48 → 37.85 ± 0.60; UASpeech B2 dysarthric full 88.73 ± 0.64 → 88.80 ± 0.96; LibriSpeech test-clean 4.11 ± 0.04 → 4.15 ± 0.05.
+
+**Finding 49:** retraining with another seed moves engine WER by little: sd 0.04–0.35 points over all clips and 0.26–0.35 on dysarthric speakers. Differences of about 0.5 points between single runs are therefore at the edge of seed noise. big7's gain over big6 on dysarthric speakers' final text holds for every seed (−1.13, −1.04, −0.99; pooled −1.06, CI −1.65..−0.47), so on the official split it is not seed luck. It comes mostly from M05 (−2.0). Folds B and C did not show it (Finding 47). The gain therefore depends on which speakers are held out, not on the seed. Seed 0 of big6 was its worst seed, so table 1's single-seed step from row 5 to row 6 (−0.71 overall) overstates the mean step (−0.53). On live text, big7's control speakers are no better (MC04 is worse in two seeds of three). The deployed big7 (seed 0) sits at its seeds' mean (17.03 against 16.98), so it stays on the board.
+
 ## 5. Findings so far, for the paper
 
 The list below covers E1–E14. Findings 17–36 are numbered in their entries. The consolidated claims the paper will make, each with its
@@ -1539,7 +1578,7 @@ evidence and status, are in [PAPER.md](PAPER.md) (section 5); keep that table cu
   whose transcript never appears in training. **Correction (E13):** this is not possible with this split. Only 46 of 5214 test clips qualify, and removing the shared
   prompts from training would leave 0.47 h. State the overlap in the paper and use UASpeech and LibriSpeech as the checks on unfamiliar material.
 - **One seed per run.** Before the paper, repeat the final configuration with at least 3 seeds and report mean and
-  spread.
+  spread. **Done for big6 and big7 (Seeds, Finding 49):** the seed spread is 0.04–0.35 points; other rows remain one seed.
 - **No language model in evaluation.** The deployed system uses one; the final model should also be evaluated with it.
 - **Float, not deployed weights.** The device runs int8 (or int4) weights; final numbers must come from the exported
   `.tnm`.
