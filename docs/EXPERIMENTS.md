@@ -1388,7 +1388,11 @@ Interruption (fold B, big7 recipe):
 - Resumed from the step-3750 checkpoint on 2026-11-05 at 01:01.
 - On resume the trainer restarts the batch order of the current epoch, so this run's data order differs from an uninterrupted one.
 - Restarting exposed a bug: `last.pt` is rewritten at every save, and the run scripts took it to mean "finished". A plain restart would have skipped the last 2250 steps and scored the partial model. The trainer now writes `out/done` after its final save, and every run script checks for that instead (commit 680b900).
-- Speed on the same run, median of 100-step blocks without validation: 1.33 s/step before the swap, 0.86 after (about 1.5 ×). Training here is partly CPU-bound.
+- Speed: on this run, the median 100-step block took 1.33 s/step before the swap and 0.86 s after. That comparison is confounded: before the swap the PC was in use in the evening, and after it the PC sat idle overnight.
+- Medians of whole runs show no clear CPU effect:
+  - big6 recipe: 0.66 s/step (big6, old CPU), 0.97 and 1.02 (folds B and C, old CPU), 0.99 (big6_s1, new CPU, morning).
+  - big7 recipe: 0.76 (simpre's stage 2, new CPU, night), 0.98 (big7_s1, new CPU, morning).
+- What else the PC is doing (RAM was near zero free) matters more than the CPU.
 
 Results, float greedy (`train/foldsum.py`). Each fold's models are scored only on that fold's held-out speakers. WER is full context / chunk 64:
 
@@ -1453,7 +1457,10 @@ Recipe:     `train/runs/teacher.cmd`.
 Data:       as big7; the teacher sees only big6's training data.
 Measure:    the teacher on TORGO test, LibriSpeech and UASpeech (float, greedy, full context); big11 as E20, against big7.
 Checked:    CPU smoke test on 24 TORGO training clips (laptop, NeMo 3.0.0, torch 2.6.0): teacher training, scoring, offset, and student training with and without the teacher all run.
-Result:     pending.
+Result:     not run yet.
+- First attempt, 2026-11-05 07:24, failed while loading the model.
+- After the motherboard swap, Windows Smart App Control is on, and it blocked a pandas DLL in the NeMo environment ("An Application Control policy has blocked this file"). No teacher was trained.
+- The queue went on to the seed runs. big11 waits for a working NeMo environment on the PC.
 
 ### Seeds (queued 2026-11-03)
 
