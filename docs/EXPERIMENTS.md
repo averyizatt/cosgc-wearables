@@ -1442,7 +1442,30 @@ Recipe:     `train/runs/simpre.cmd` (simpre1, then simpre).
 Data:       no TORGO in stage 1; stage 2 as big7. No test speaker or UASpeech in anything fitted.
 Measure:    engine int8 + LM, TORGO test live and final, paired CI against big7; UASpeech and LibriSpeech float greedy; stage 1 alone on TORGO test.
 Why:        mixed in (big10), the simulation is separable from real speech (AUC 0.99), so the model can learn it as its own kind of speech. A first stage cannot be separated from what comes after.
-Result:     pending.
+Result:     done 2026-11-05. Both stages ran after the folds (from 03:54) and finished before 07:22, on the new CPU.
+Stage 1 alone (simpre1, no TORGO), TORGO test float greedy: 30.8 full / 37.6 chunk 64; F03 50.7, M05 78.4, FC03 17.0, MC04 16.9.
+
+Engine int8 + LM, TORGO test, big7 → simpre (`~/lmtest/simpre_q121_{full,stream}_lm.json`, `train/paired_ci.py`):
+
+| | final: big7 → simpre | CI | live (c32): big7 → simpre | CI |
+|---|---|---|---|---|
+| all | 17.03 → 17.19 | −0.20..+0.56 | 23.31 → 23.78 | +0.02..+0.91 |
+| control | 8.37 → 8.68 | −0.01..+0.64 | 12.65 → 13.18 | +0.11..+0.99 |
+| dysarthric | 35.43 → 35.29 | −1.04..+0.76 | 45.99 → 46.34 | −0.56..+1.21 |
+| M05 | 46.14 → 44.74 | −3.00..+0.25 | 58.79 → 59.45 | −1.13..+2.51 |
+
+Float greedy, big7 → simpre:
+- TORGO all: 18.46 → 18.65 (CI −0.22..+0.57); dysarthric 39.11 → 38.58 (−1.49..+0.42); control 8.75 → 9.27 (+0.14..+0.88).
+- UASpeech dysarthric: 89.90 → 88.18 (−2.75..−0.60); controls 37.29 → 37.44 (−0.93..+1.26).
+- LibriSpeech: 4.19 → 4.17.
+
+Decision:   drop; big7 stays on the board.
+
+**Finding 48:** the waveform simulation as a first stage changes nothing on TORGO's dysarthric speakers, as it did when mixed in (F45).
+- Final text: 35.43 → 35.29, CI −1.0..+0.8.
+- Live text is slightly worse, mostly on controls.
+- Like big10, it improves unseen dysarthric speech in UASpeech (−1.7, CI −2.8..−0.6).
+- Order does not rescue this simulator for TORGO.
 
 ### E21. A Parakeet teacher (queued 2026-11-03)
 
