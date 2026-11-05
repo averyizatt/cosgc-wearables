@@ -1484,6 +1484,10 @@ Result:     not run yet.
 - First attempt, 2026-11-05 07:24, failed while loading the model.
 - After the motherboard swap, Windows Smart App Control is on, and it blocked a pandas DLL in the NeMo environment ("An Application Control policy has blocked this file"). No teacher was trained.
 - The queue went on to the seed runs. big11 waits for a working NeMo environment on the PC.
+- Fixed 2026-11-05 with Smart App Control left on. The Code Integrity log (Event 3077) names each blocked file. Only two files were blocked in the NeMo environment: pandas 3.1.0's `offsets.pyd`, and the `_torchaudio.pyd` from download.pytorch.org's torchaudio 2.6.0+cu126. Changes: pandas 2.3.3; torchaudio 2.6.0+cpu from PyPI (`--no-deps`; torch stays 2.6.0+cu126, CUDA available; NeMo uses torchaudio only for audio metrics). A scan that maps every .pyd/.dll without running it found no blocks, so only a real import shows them.
+- PC smoke tests, all passing: teacher training (30 steps), scoring (`--limit 100`), the offset step, and student training with the teacher (20 steps).
+- Queued for 01:00 on 2026-11-06 (`G:\cosgc\teacherq.cmd`, which calls `teacher.cmd`).
+- Caveat for the comparison: big11 trains in the NeMo environment (torch 2.6.0), big7 in the main one (torch 2.14.1). Kernels and random streams differ, so a difference from big7 smaller than the seed spread (Finding 49, about 0.3 points) means nothing.
 
 ### Seeds (queued 2026-11-03)
 
