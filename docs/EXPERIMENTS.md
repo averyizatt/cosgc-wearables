@@ -1390,7 +1390,7 @@ Interruption (fold B, big7 recipe):
 - Restarting exposed a bug: `last.pt` is rewritten at every save, and the run scripts took it to mean "finished". A plain restart would have skipped the last 2250 steps and scored the partial model. The trainer now writes `out/done` after its final save, and every run script checks for that instead (commit 680b900).
 - Speed on the same run, median of 100-step blocks without validation: 1.33 s/step before the swap, 0.86 after (about 1.5 ×). Training here is partly CPU-bound.
 
-Results, float greedy (`G:\cosgc\foldsum.py`). Each fold's models are scored only on that fold's held-out speakers. WER is full context / chunk 64:
+Results, float greedy (`train/foldsum.py`). Each fold's models are scored only on that fold's held-out speakers. WER is full context / chunk 64:
 
 | Fold: dysarthric test / control test | base, dysarthric | big6, dysarthric | big7, dysarthric | base, control | big6, control | big7, control |
 |---|---|---|---|---|---|---|
