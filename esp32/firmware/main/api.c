@@ -111,7 +111,8 @@ void api_human_partial(void) { s_pending = 1; }
 bool api_dump_on(void) { return s_dump; }
 static volatile int s_mic = 1;
 int api_mic(void) { return s_mic; }
-static volatile int s_chunk;  // live text: encoder frames per streaming chunk (0: the model's own)
+static volatile int s_chunk = 16;  // live text: encoder frames per streaming chunk (0: the model's own, 32 for big7). 16 halves
+                                  // how far the live text trails the speech; the final text does not depend on it
 int api_chunk(void) { return s_chunk; }
 
 // JSON string escaping into dst (UTF-8 passes through); returns bytes written, always terminated

@@ -359,18 +359,20 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     const int64_t t0 = esp_timer_get_time();
     static char stream[4096];  // the live text at the end of the utterance, for the SD log
     stream[0] = 0;
+    int finished = 0;  // the stream was finished (once only)
     // another press is already waiting: take the streaming text now rather than making that utterance wait for a full-context pass
     const int next_waiting = uxQueueMessagesWaiting(g_ptt) > 0;
     int full = 0;  // a full-context pass ran (it has a confidence)
     if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) {
         tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+        finished = 1;
         snprintf(stream, sizeof(stream), "%s", p->text);
     } else {
         full = 1;
-        // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work);
-        // when logging, always, so the log has the finished live text to compare with the final one
-        if (p->st && (p->n_utt >= PTT_PREVIEW || sdlog_on())) {
+        // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work)
+        if (p->st && p->n_utt >= PTT_PREVIEW) {
             tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+            finished = 1;
             snprintf(stream, sizeof(stream), "%s", p->text);
             ptt_partial(p->text);
         }
@@ -406,6 +408,9 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
     api_final(p->text, p->n_utt / 16000.0, after, cl, cs);
     if (p->raw && api_dump_on() && p->n_raw) api_audio(p->raw, p->n_raw);
+    // the log compares the finished live text with the final one: finish the stream now, after the final text is on screen, so it
+    // never adds to the wait (the full pass is done with the stream's kept rows)
+    if (sdlog_on() && p->st && !finished) tasr_nemo_stream_finish(p->st, stream, sizeof(stream));
     if (sdlog_on()) {  // copied and handed to the card's writer task: returns at once
         const sdlog_utt_t u = {
             // the recording buffer holds the first 20 s (and only the pre-roll for a streaming model without the full pass)
@@ -451,7 +456,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     static char text[4096];
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
-    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk", 0};
+    ptt_t p = {m, dec, tasr_nemo_stream_new(m, api_chunk(), 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk", 0};
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st && !MIC_FINAL_FULL ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     if (p.st && MIC_FINAL_FULL) tasr_nemo_stream_keep(p.st, PTT_CAP);
     oled_start();
@@ -461,7 +466,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
            p.st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
     show_prompt(&p);
     uint32_t rd = 0;  // samples taken from the ring
-    int active = 0, npre = 0, pw = 0, chunk = 0;  // chunk: the live stream's (0: the model's own)
+    int active = 0, npre = 0, pw = 0, chunk = api_chunk();  // chunk: the live stream's (0: the model's own)
     led_set(LED_IDLE);
     for (;;) {
         const int n = (int)(xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY) / 2);
