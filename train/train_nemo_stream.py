@@ -243,6 +243,8 @@ def main():
                     "needs NeMo (run in nemovenv)")
     ap.add_argument("--teacher_kd", type=float, default=0.5, help="weight of the teacher's frame-level KL")
     ap.add_argument("--teacher_T", type=float, default=2.0, help="temperature for teacher and student in the KL")
+    ap.add_argument("--teacher_groups", default="",
+                    help="comma-separated manifest groups (e.g. dysarthric) whose clips get the teacher term; empty = all clips")
     ap.add_argument("--teacher_shift", type=int, default=0,
                     help="student frames by which the teacher's posteriors lag the student's (teacher_ft.py offset measures it)")
     a = ap.parse_args()
@@ -313,7 +315,9 @@ def main():
         for p in teacher.parameters():
             p.requires_grad_(False)
         assert teacher.head.out_features == V + 1, "teacher and student vocabularies differ"
-        print("teacher", a.teacher, "weight", a.teacher_kd, "T", a.teacher_T, "shift", a.teacher_shift, flush=True)
+        print("teacher", a.teacher, "weight", a.teacher_kd, "T", a.teacher_T, "shift", a.teacher_shift,
+              "groups", a.teacher_groups or "all", flush=True)
+    teacher_groups = set(filter(None, a.teacher_groups.split(",")))
     aug = None
     if a.aug_dir:
         from augment import NpAug
@@ -396,7 +400,10 @@ def main():
                 valid = (torch.arange(lp.shape[1], device=dev)[None] < ol[:, None]).float()
                 kl = (tp.exp() * (tp - lp)).sum(-1)
                 loss = loss + a.kd * (kl * valid).sum() / valid.sum()
-            if teacher is not None and not chunk:
+            tsel = ~sel
+            if teacher_groups:
+                tsel &= torch.tensor([items[j].get("group") in teacher_groups for j in idx.tolist()])
+            if teacher is not None and not chunk and tsel.any():
                 # the teacher hears the waveform (before the mel-level simulation and the masks), so clips the simulation
                 # changed are left out; its 80 ms frames are repeated to the student's 40 ms
                 with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -412,7 +419,7 @@ def main():
                 Tn = lp.shape[1]
                 tq = F.pad(tq, (0, 0, 0, max(0, Tn - tq.shape[1])))[:, :Tn]
                 ls = (lg.float() / Tk).log_softmax(-1)
-                valid = ((torch.arange(Tn, device=dev)[None] < torch.minimum(ol, tlen)[:, None]) & ~sel.to(dev)[:, None]).float()
+                valid = ((torch.arange(Tn, device=dev)[None] < torch.minimum(ol, tlen)[:, None]) & tsel.to(dev)[:, None]).float()
                 kl = (tq.exp() * (tq - ls)).sum(-1)
                 kd_t = a.teacher_kd * Tk * Tk * (kl * valid).sum() / valid.sum().clamp(min=1.0)
                 loss = loss + kd_t

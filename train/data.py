@@ -49,6 +49,7 @@ def load_manifest(paths, min_dur=0.3, max_dur=20.0, sp=None, max_per_source=None
                 continue
             per_src[src] = per_src.get(src, 0) + 1
             items.append({"wav": d["wav"], "text": txt, "dur": dur, "src": src, **({"twer": d["twer"]} if "twer" in d else {}),
+                          **({"group": d["group"]} if "group" in d else {}),
                           **({k: d[k] for k in ("pack", "off", "n")} if "pack" in d else {})})
     if sp is not None:
         keep = []

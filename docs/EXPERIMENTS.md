@@ -1512,6 +1512,15 @@ Device engine, TORGO test, int8 + LM, big7 → big11, paired CI:
 - Queued for 01:00 on 2026-11-06 (`G:\cosgc\teacherq.cmd`, which calls `teacher.cmd`). Paused at the user's request on 2026-11-05 at about 16:30, before it started. Started directly at 22:26 that day when the user said to go ahead.
 - Caveat for the comparison: big11 trains in the NeMo environment (torch 2.6.0), big7 in the main one (torch 2.14.1). Kernels and random streams differ, so a difference from big7 smaller than the seed spread (Finding 49, about 0.3 points) means nothing.
 
+### E22. The teacher only on dysarthric clips (started 2026-11-06 04:08)
+
+Question:   Finding 50 says the E21 teacher beat big7 only on dysarthric speech, and passed its weakness on typical speech to big11. Does limiting the teacher term to dysarthric training clips keep the gain and avoid the loss?
+Change:     big11 exactly, plus `--teacher_groups dysarthric`. The teacher term is computed only on clips whose manifest group is dysarthric (TORGO training speakers F01, F04, M01–M04; never simulated clips; LibriSpeech has no group). `data.py` now keeps the manifest's group. Batches without such a clip skip the teacher. In the default (all groups), the loss is unchanged.
+Recipe:     `train/runs/big12.cmd` (teacher110 and its offset, +4, from E21).
+Checked:    PC smoke test, 100 full-context steps on LibriSpeech 100 + TORGO train: the teacher term was active on 21 of 100 batches.
+Measure:    as E21, against big7. Same torch-version caveat as E21.
+Result:     running.
+
 ### Seeds (queued 2026-11-03)
 
 big6 and big7 with seeds 1 and 2 (`big6.cmd 1`, `big7.cmd 2`, ...; `train_nemo_stream.py --seed` changes batch order, masks and chunk choices; seed 0 reproduces the original runs). Measure: the spread of engine WER across seeds, and whether big7 against big6 holds for every seed.
