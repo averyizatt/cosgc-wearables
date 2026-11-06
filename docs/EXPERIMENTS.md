@@ -1480,13 +1480,36 @@ Recipe:     `train/runs/teacher.cmd`.
 Data:       as big7; the teacher sees only big6's training data.
 Measure:    the teacher on TORGO test, LibriSpeech and UASpeech (float, greedy, full context); big11 as E20, against big7.
 Checked:    CPU smoke test on 24 TORGO training clips (laptop, NeMo 3.0.0, torch 2.6.0): teacher training, scoring, offset, and student training with and without the teacher all run.
-Result:     not run yet.
+Result:     ran 2026-11-05 22:26 to 2026-11-06 03:15 on the PC. big11 is worse than big7. Dropped; big7 stays on the board.
+- Teacher: 6000 steps in 4683 s (0.78 s/step, 3.8 GB of GPU memory). Offset against big7: +4 teacher frames, the edge of the allowed range. The curve peaks clearly there: agreement 1.000 against 0.769 at +6 and 0.459 at +8.
+- big11: 6000 steps in 9290 s (1.55 s/step). The teacher term was about 1.1 on the roughly 50 % of batches that carry it. Validation WER (TORGO test + LibriSpeech, float, mixed) went 6.87 at the start to 7.16 at the end.
+
+Float, greedy, full / live (chunk 64) where both exist:
+
+| Model | TORGO all | TORGO control | TORGO dysarthric | UASpeech all | UASpeech control | UASpeech dysarthric | LibriSpeech test-clean |
+|---|---|---|---|---|---|---|---|
+| Parakeet 110M, untuned (E15) | 24.40 | | | 66.62 | | 90.99 | 2.62 |
+| teacher110 (fine-tuned, our tokenizer) | 20.99 | 14.25 | 35.34 | 69.95 | 48.34 | 88.70 | 9.17 |
+| big7 | 18.46 | 8.75 / 14.06 | 39.11 / 50.60 | 65.46 | 37.29 / 40.74 | 89.90 / 94.86 | 4.19 / 6.50 |
+| big11 | 18.60 | 9.35 / 15.46 | 38.26 / 51.01 | 64.60 | 40.62 / 43.67 | 85.41 / 98.08 | 5.79 / 7.76 |
+
+Device engine, TORGO test, int8 + LM, big7 → big11, paired CI:
+
+| | Final (full) | Live (chunk 32) |
+|---|---|---|
+| all | 17.03 → 17.84, +0.81 (+0.38..+1.26) | 23.31 → 24.26, +0.95 (+0.45..+1.47) |
+| control | 8.37 → 9.30, +0.93 (+0.54..+1.31) | 12.65 → 13.67, +1.02 (+0.49..+1.58) |
+| dysarthric | 35.43 → 35.98, +0.55 (−0.58..+1.65) | 45.99 → 46.78, +0.79 (−0.27..+1.85) |
+| F03 / M05 | 29.77 → 29.63 / 46.14 → 48.00 | 39.23 → 39.02 / 58.79 → 61.45 (+0.58..+4.60) |
+| FC03 / MC04 | 7.74 → 8.72 / 9.14 → 10.00 | 11.72 → 12.27 / 13.78 → 15.39 |
+
+**Finding 50:** distilling from this teacher makes the on-device model worse. On the engine, final WER rises by 0.8 points (CI +0.4..+1.3), about 20 times big7's seed spread (sd 0.04), so the torch-version difference is unlikely to explain it. Dysarthric speakers are not clearly better or worse. The likely cause is the teacher itself. Fitting Parakeet's encoder to our 1024-piece tokenizer with a new head lost most of its typical-speech skill: LibriSpeech went 2.62 → 9.17, and TORGO controls are at 14.25 against big7's 8.75. Only on dysarthric TORGO speakers (35.34 against 39.11) and UASpeech's dysarthric speakers was it better than the student. big11 inherited that profile: in float it is better on unseen dysarthric speech (UASpeech dysarthric 89.90 → 85.41) and worse on typical speech (LibriSpeech 4.19 → 5.79, UASpeech controls +3.3). A useful teacher here would first have to beat the student on typical speech, for instance by keeping Parakeet's own tokenizer and distilling across tokenizers, or by applying the teacher term only to dysarthric clips. Neither is tested.
 - First attempt, 2026-11-05 07:24, failed while loading the model.
 - After the motherboard swap, Windows Smart App Control is on, and it blocked a pandas DLL in the NeMo environment ("An Application Control policy has blocked this file"). No teacher was trained.
 - The queue went on to the seed runs. big11 waits for a working NeMo environment on the PC.
 - Fixed 2026-11-05 with Smart App Control left on. The Code Integrity log (Event 3077) names each blocked file. Only two files were blocked in the NeMo environment: pandas 3.1.0's `offsets.pyd`, and the `_torchaudio.pyd` from download.pytorch.org's torchaudio 2.6.0+cu126. Changes: pandas 2.3.3; torchaudio 2.6.0+cpu from PyPI (`--no-deps`; torch stays 2.6.0+cu126, CUDA available; NeMo uses torchaudio only for audio metrics). A scan that maps every .pyd/.dll without running it found no blocks, so only a real import shows them.
 - PC smoke tests, all passing: teacher training (30 steps), scoring (`--limit 100`), the offset step, and student training with the teacher (20 steps).
-- Queued for 01:00 on 2026-11-06 (`G:\cosgc\teacherq.cmd`, which calls `teacher.cmd`). Paused at the user's request on 2026-11-05 at about 16:30, before it started; nothing has been trained yet.
+- Queued for 01:00 on 2026-11-06 (`G:\cosgc\teacherq.cmd`, which calls `teacher.cmd`). Paused at the user's request on 2026-11-05 at about 16:30, before it started. Started directly at 22:26 that day when the user said to go ahead.
 - Caveat for the comparison: big11 trains in the NeMo environment (torch 2.6.0), big7 in the main one (torch 2.14.1). Kernels and random streams differ, so a difference from big7 smaller than the seed spread (Finding 49, about 0.3 points) means nothing.
 
 ### Seeds (queued 2026-11-03)
