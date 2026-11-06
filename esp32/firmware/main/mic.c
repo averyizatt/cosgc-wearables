@@ -313,7 +313,10 @@ typedef struct {
     int64_t press_us;  // when the button went down (for the SD log)
     int16_t *raw2;     // the other microphone (CONFIG_TASR_MIC2), laid out like raw; only with the SD log
     int n_raw2;
+    int taps;          // taps in the current burst, acted on TAP_GAP_US after the last one
+    int64_t last_tap_us;
 } ptt_t;
+#define TAP_GAP_US 700000  // a burst of taps ends after this long without another
 // prompted recording (sdlog.c): the next prompt on the screen and its number in the status line
 static void show_prompt(ptt_t *p)
 {
@@ -343,13 +346,9 @@ static void ptt_partial(const char *text)
 // the utterance ends here: final text (released_us: when the button went up, or 0 at the utterance-mode limit)
 static void ptt_end(ptt_t *p, int64_t released_us)
 {
-    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap (prompted recording: back to the previous prompt, to say it again;
-        int count = 0;                       // after the last prompt: a new session with the next prompt file)
-        const int pos = sdlog_prompt_pos(&count);
-        if (count && !sdlog_prompt()) sdlog_next_session();
-        else if (pos > 1) sdlog_prompt_back();
-        oled_status(p->idle);
-        show_prompt(p);
+    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap: counted, acted on when the burst ends (ptt_taps)
+        p->taps++;
+        p->last_tap_us = esp_timer_get_time();
         led_set(LED_NOTHING);
         api_state("idle");
         return;
@@ -419,6 +418,25 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
     oled_status(p->idle);
     show_prompt(p);
+}
+// a burst of taps has ended. Prompted recording (SD log): five or more switch between prompts and normal use (still logged); one to
+// four go back to the previous prompt to say it again, or, after the last prompt, open a new session with the next prompt file
+static void ptt_taps(ptt_t *p)
+{
+    const int n = p->taps;
+    p->taps = 0;
+    if (n >= 5) {
+        const int on = sdlog_toggle_prompts();
+        if (on >= 0) oled_push(on ? "prompt mode" : "normal mode (5 taps: prompts)");  // also clears the prompt line
+    } else {
+        int count = 0;
+        const int pos = sdlog_prompt_pos(&count);
+        if (count && !sdlog_prompt()) sdlog_next_session();
+        else if (count && pos > 1) sdlog_prompt_back();
+    }
+    snprintf(p->idle, sizeof(p->idle), "hold to talk");
+    oled_status(p->idle);
+    show_prompt(p);  // the prompt and its number again, if prompts are on
 }
 // Push-to-talk: an utterance is the audio between a press and a release (plus the pre-roll). Streaming models are fed
 // while the button is held, for as long as it is held; the final text comes as soon as the recognizer reaches the
@@ -492,6 +510,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             led_set(LED_LISTEN);
             api_state("listening");
         }
+        if (p.taps && !active && esp_timer_get_time() - p.last_tap_us > TAP_GAP_US) ptt_taps(&p);  // a burst of taps has ended
         tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
         rd += n;
         if ((api_dump_on() || sdlog_on()) && !p.raw) p.raw = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);

@@ -35,4 +35,6 @@ const char *sdlog_cue(void);     // what the screen shows for it: a "text | cue"
 int sdlog_prompt_pos(int *count);  // 1-based position of the current prompt; *count: how many there are
 void sdlog_prompt_back(void);    // a tap: the previous prompt again
 bool sdlog_next_session(void);   // a tap after the last prompt: a new session folder with the next prompt file
+int sdlog_toggle_prompts(void);  // five taps: pause the prompts (normal use, still logged) or resume them where they stopped;
+                                 // returns 1 prompts on, 0 off, -1 no prompts to switch
 void sdlog_utt(const sdlog_utt_t *u);  // write the utterance, then move to the next prompt

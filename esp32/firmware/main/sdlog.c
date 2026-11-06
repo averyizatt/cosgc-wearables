@@ -249,12 +249,20 @@ void sdlog_start(const void *model, uint32_t model_bytes)
 }
 
 bool sdlog_on(void) { return s_on; }
-const char *sdlog_prompt(void) { return s_on && s_pi < s_np ? s_prompt[s_pi] : NULL; }
-const char *sdlog_cue(void) { return s_on && s_pi < s_np ? s_cue[s_pi] : NULL; }
+static bool s_free;  // normal mode: prompts paused (five taps), utterances still logged, without a prompt
+const char *sdlog_prompt(void) { return s_on && !s_free && s_pi < s_np ? s_prompt[s_pi] : NULL; }
+const char *sdlog_cue(void) { return s_on && !s_free && s_pi < s_np ? s_cue[s_pi] : NULL; }
 int sdlog_prompt_pos(int *count)
 {
-    if (count) *count = s_np;
+    if (count) *count = s_free ? 0 : s_np;
     return s_pi + 1;
+}
+int sdlog_toggle_prompts(void)
+{
+    if (!s_on || !s_np) return -1;
+    s_free = !s_free;
+    printf("sd: %s\n", s_free ? "normal mode (prompts paused; five taps to go back)" : "prompt mode");
+    return !s_free;
 }
 void sdlog_prompt_back(void)
 {
@@ -361,7 +369,7 @@ void sdlog_utt(const sdlog_utt_t *u)
         cJSON_Delete(j);
         heap_caps_free(jb.pcm);
     }
-    if (s_pi < s_np) s_pi++;
+    if (!s_free && s_pi < s_np) s_pi++;
 }
 
 #else
@@ -372,5 +380,6 @@ const char *sdlog_cue(void) { return NULL; }
 int sdlog_prompt_pos(int *count) { if (count) *count = 0; return 0; }
 void sdlog_prompt_back(void) {}
 bool sdlog_next_session(void) { return false; }
+int sdlog_toggle_prompts(void) { return -1; }
 void sdlog_utt(const sdlog_utt_t *u) { (void)u; }
 #endif
