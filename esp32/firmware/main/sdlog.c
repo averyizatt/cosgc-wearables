@@ -2,6 +2,8 @@
 // Session log on the microSD card (sdlog.h). Layout on the card:
 //   prompts.txt            optional: one prompt per line, or "text | cue" to score against text while the screen shows cue (for example
 //                          a phonetic spelling); lines starting with '#' are notes copied into the session (speaker code, style, ...)
+//   prompts1.txt ... prompts9.txt   instead of prompts.txt: one per condition (distance, place, effort). The first boot session uses
+//                          the first; after the last prompt, a tap opens a new session with the next file (wrapping round)
 //   s0001/session.json     the model's size and fingerprint, the firmware build, the decoder settings, the notes, the prompts
 //   s0001/log.jsonl        one line per utterance (fields: sdlog_utt_t, plus levels and file names)
 //   s0001/u0001.wav        what the model heard (after gain control), 16 kHz mono 16-bit
@@ -47,9 +49,16 @@ typedef struct {
     int16_t *pcm;      // audio, then raw, in one PSRAM block (NULL: copy failed, the line is still written)
     int n_audio, n_raw, pre, utt;
     int64_t t0;
+    char dir[24];      // the session folder it belongs to (a tap can open the next session while this one is written)
 } job_t;
 static QueueHandle_t s_jobs;
 static void writer_task(void *arg);
+// prompt files: prompts1.txt ... prompts9.txt in turn (a tap after the last prompt opens the next session with the next file), or
+// prompts.txt alone
+static char s_files[9][16];
+static int s_nfiles, s_file;
+static char s_hex[12];
+static uint32_t s_model_bytes;
 
 static uint32_t fnv1a(const uint8_t *p, uint32_t n)
 {
@@ -106,9 +115,15 @@ static void levels(const int16_t *x, int n, int pre, float *speech, float *noise
     free(db);
 }
 
-static void read_prompts(cJSON *notes, cJSON *prompts)
+static void read_prompts(const char *name, cJSON *notes, cJSON *prompts)
 {
-    FILE *f = fopen(ROOT "/prompts.txt", "rb");
+    heap_caps_free(s_ptext);
+    s_ptext = NULL;
+    s_np = s_pi = 0;
+    if (!name) return;
+    char path[40];
+    snprintf(path, sizeof(path), ROOT "/%s", name);
+    FILE *f = fopen(path, "rb");
     if (!f) return;
     fseek(f, 0, SEEK_END);
     const long sz = ftell(f);
@@ -141,6 +156,52 @@ static void read_prompts(cJSON *notes, cJSON *prompts)
     }
 }
 
+// a new session folder (s0001, s0002, ...) with the current prompt file; false if the card refused
+static bool open_session(void)
+{
+    struct stat st;
+    int k = 1;
+    char dir[24];
+    for (; k < 10000; k++) {
+        snprintf(dir, sizeof(dir), ROOT "/s%04d", k);
+        if (stat(dir, &st) != 0) break;
+    }
+    if (k == 10000 || mkdir(dir, 0777) != 0) { ESP_LOGW(TAG, "cannot make a session folder on the card"); return false; }
+    snprintf(s_dir, sizeof(s_dir), "%s", dir);
+    s_utt = 0;
+    cJSON *j = cJSON_CreateObject(), *notes = cJSON_CreateArray(), *prompts = cJSON_CreateArray();
+    read_prompts(s_nfiles ? s_files[s_file] : NULL, notes, prompts);
+    cJSON_AddNumberToObject(j, "session", k);
+    cJSON_AddNumberToObject(j, "model_bytes", s_model_bytes);
+    cJSON_AddStringToObject(j, "model_fnv1a", s_hex);  // esp32/tools/sd_session.py models: the same hash of each .tnm
+    cJSON_AddStringToObject(j, "firmware", __DATE__ " " __TIME__);
+    cJSON_AddStringToObject(j, "idf", esp_get_idf_version());
+    cJSON_AddNumberToObject(j, "beam", CONFIG_TASR_BEAM);
+    cJSON_AddNumberToObject(j, "lm_weight_x100", CONFIG_TASR_LM_WEIGHT_X100);
+    cJSON_AddNumberToObject(j, "token_bonus_x100", CONFIG_TASR_TOKEN_BONUS_X100);
+    if (s_nfiles) cJSON_AddStringToObject(j, "prompt_file", s_files[s_file]);
+    cJSON_AddItemToObject(j, "notes", notes);
+    cJSON_AddItemToObject(j, "prompts", prompts);
+    char path[48];
+    snprintf(path, sizeof(path), "%s/session.json", s_dir);
+    FILE *f = fopen(path, "w");
+    char *txt = cJSON_Print(j);
+    if (f && txt) fputs(txt, f);
+    if (f) fclose(f);
+    free(txt);
+    cJSON_Delete(j);
+    return f != NULL;
+}
+
+bool sdlog_next_session(void)
+{
+    if (!s_on || !s_nfiles) return false;
+    s_file = (s_file + 1) % s_nfiles;
+    const bool ok = open_session();
+    printf("sd: new session %s, %d prompts from %s\n", s_dir + sizeof(ROOT), s_np, s_files[s_file]);
+    return ok;
+}
+
 void sdlog_start(const void *model, uint32_t model_bytes)
 {
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -167,38 +228,22 @@ void sdlog_start(const void *model, uint32_t model_bytes)
         return;
     }
     struct stat st;
-    int k = 1;
-    for (; k < 10000; k++) {
-        snprintf(s_dir, sizeof(s_dir), ROOT "/s%04d", k);
-        if (stat(s_dir, &st) != 0) break;
+    char path[40];
+    s_nfiles = 0;
+    for (int i = 1; i <= 9; i++) {
+        snprintf(path, sizeof(path), ROOT "/prompts%d.txt", i);
+        if (stat(path, &st) == 0) snprintf(s_files[s_nfiles++], sizeof(s_files[0]), "prompts%d.txt", i);
     }
-    if (k == 10000 || mkdir(s_dir, 0777) != 0) { ESP_LOGW(TAG, "cannot make a session folder on the card"); return; }
-    cJSON *j = cJSON_CreateObject(), *notes = cJSON_CreateArray(), *prompts = cJSON_CreateArray();
-    read_prompts(notes, prompts);
-    char hex[12];
-    snprintf(hex, sizeof(hex), "%08lx", (unsigned long)fnv1a(model, model_bytes));
-    cJSON_AddNumberToObject(j, "session", k);
-    cJSON_AddNumberToObject(j, "model_bytes", model_bytes);
-    cJSON_AddStringToObject(j, "model_fnv1a", hex);  // esp32/tools/sd_session.py models: the same hash of each .tnm
-    cJSON_AddStringToObject(j, "firmware", __DATE__ " " __TIME__);
-    cJSON_AddStringToObject(j, "idf", esp_get_idf_version());
-    cJSON_AddNumberToObject(j, "beam", CONFIG_TASR_BEAM);
-    cJSON_AddNumberToObject(j, "lm_weight_x100", CONFIG_TASR_LM_WEIGHT_X100);
-    cJSON_AddNumberToObject(j, "token_bonus_x100", CONFIG_TASR_TOKEN_BONUS_X100);
-    cJSON_AddItemToObject(j, "notes", notes);
-    cJSON_AddItemToObject(j, "prompts", prompts);
-    char path[48];
-    snprintf(path, sizeof(path), "%s/session.json", s_dir);
-    FILE *f = fopen(path, "w");
-    char *txt = cJSON_Print(j);
-    if (f && txt) fputs(txt, f);
-    if (f) fclose(f);
-    free(txt);
-    cJSON_Delete(j);
+    if (!s_nfiles && stat(ROOT "/prompts.txt", &st) == 0) snprintf(s_files[s_nfiles++], sizeof(s_files[0]), "prompts.txt");
+    snprintf(s_hex, sizeof(s_hex), "%08lx", (unsigned long)fnv1a(model, model_bytes));
+    s_model_bytes = model_bytes;
+    s_file = 0;
+    const bool f = open_session();
     s_jobs = xQueueCreate(4, sizeof(job_t));
-    s_on = f != NULL && s_jobs && xTaskCreate(writer_task, "sd_write", 6144, NULL, 2, NULL) == pdPASS;
-    printf("sd: card %s, %llu MB, logging to %s (model %s), %d prompts\n", card->cid.name,
-           ((unsigned long long)card->csd.capacity) * card->csd.sector_size / (1024 * 1024), s_dir, hex, s_np);
+    s_on = f && s_jobs && xTaskCreate(writer_task, "sd_write", 6144, NULL, 2, NULL) == pdPASS;
+    printf("sd: card %s, %llu MB, logging to %s (model %s), %d prompts from %s\n", card->cid.name,
+           ((unsigned long long)card->csd.capacity) * card->csd.sector_size / (1024 * 1024), s_dir, s_hex, s_np,
+           s_nfiles ? s_files[s_file] : "no prompt file");
 }
 
 bool sdlog_on(void) { return s_on; }
@@ -223,8 +268,8 @@ static void writer_task(void *arg)
         char wav[48], raw[48], name[16], rname[16];
         snprintf(name, sizeof(name), "u%04d.wav", jb.utt);
         snprintf(rname, sizeof(rname), "u%04dr.wav", jb.utt);
-        snprintf(wav, sizeof(wav), "%s/%s", s_dir, name);
-        snprintf(raw, sizeof(raw), "%s/%s", s_dir, rname);
+        snprintf(wav, sizeof(wav), "%s/%s", jb.dir, name);
+        snprintf(raw, sizeof(raw), "%s/%s", jb.dir, rname);
         const int16_t *audio = jb.pcm, *rawp = jb.pcm ? jb.pcm + jb.n_audio : NULL;
         const bool ok_wav = audio && write_wav(wav, audio, jb.n_audio);
         const bool ok_raw = rawp && jb.n_raw > 0 && write_wav(raw, rawp, jb.n_raw);
@@ -241,7 +286,7 @@ static void writer_task(void *arg)
         char *line = cJSON_PrintUnformatted(j);
         cJSON_Delete(j);
         char path[48];
-        snprintf(path, sizeof(path), "%s/log.jsonl", s_dir);
+        snprintf(path, sizeof(path), "%s/log.jsonl", jb.dir);
         FILE *f = fopen(path, "a");
         bool ok = f && line && fputs(line, f) >= 0 && fputc('\n', f) != EOF;
         if (f) {
@@ -251,7 +296,7 @@ static void writer_task(void *arg)
         }
         free(line);
         if (!ok || !ok_wav) ESP_LOGW(TAG, "writing utterance %d to the card failed (card full or removed?)", jb.utt);
-        else printf("sd: %s/%s written in %lld ms\n", s_dir + sizeof(ROOT), name, (esp_timer_get_time() - jb.t0) / 1000);
+        else printf("sd: %s/%s written in %lld ms\n", jb.dir + sizeof(ROOT), name, (esp_timer_get_time() - jb.t0) / 1000);
     }
 }
 
@@ -260,6 +305,7 @@ void sdlog_utt(const sdlog_utt_t *u)
     if (!s_on) return;
     job_t jb = {.utt = ++s_utt, .t0 = esp_timer_get_time(), .pre = u->pre, .n_audio = u->n_audio,
                 .n_raw = u->raw ? u->n_raw : 0};
+    snprintf(jb.dir, sizeof(jb.dir), "%s", s_dir);
     jb.pcm = heap_caps_malloc(sizeof(int16_t) * (size_t)(jb.n_audio + jb.n_raw + 1), MALLOC_CAP_SPIRAM);
     if (jb.pcm) {
         memcpy(jb.pcm, u->audio, sizeof(int16_t) * jb.n_audio);
@@ -307,5 +353,6 @@ const char *sdlog_prompt(void) { return NULL; }
 const char *sdlog_cue(void) { return NULL; }
 int sdlog_prompt_pos(int *count) { if (count) *count = 0; return 0; }
 void sdlog_prompt_back(void) {}
+bool sdlog_next_session(void) { return false; }
 void sdlog_utt(const sdlog_utt_t *u) { (void)u; }
 #endif

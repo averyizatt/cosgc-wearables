@@ -271,7 +271,7 @@ static void show_prompt(ptt_t *p)
         printf("prompt %d/%d: %s\n", pos, count, pr);
     } else if (count) {
         snprintf(p->idle, sizeof(p->idle), "all done");
-        oled_partial("all prompts done");
+        oled_partial("all prompts done - tap for the next set");
     }
     oled_status(p->idle);
 }
@@ -286,8 +286,11 @@ static void ptt_partial(const char *text)
 // the utterance ends here: final text (released_us: when the button went up, or 0 at the utterance-mode limit)
 static void ptt_end(ptt_t *p, int64_t released_us)
 {
-    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap (prompted recording: back to the previous prompt, to say it again)
-        if (sdlog_prompt_pos(NULL) > 1) sdlog_prompt_back();
+    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap (prompted recording: back to the previous prompt, to say it again;
+        int count = 0;                       // after the last prompt: a new session with the next prompt file)
+        const int pos = sdlog_prompt_pos(&count);
+        if (count && !sdlog_prompt()) sdlog_next_session();
+        else if (pos > 1) sdlog_prompt_back();
         oled_status(p->idle);
         show_prompt(p);
         led_set(LED_NOTHING);

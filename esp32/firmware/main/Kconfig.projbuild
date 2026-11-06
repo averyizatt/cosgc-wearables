@@ -116,7 +116,8 @@ menu "tinyasr"
             Each boot with a card makes a session folder (s0001, s0002, ...) holding a WAV per utterance (what the model heard,
             and the microphone before gain control) and log.jsonl: prompt, live and final text, the closest list phrase, the
             confidence, levels and timings. A prompts.txt in the card's root turns on prompted recording: the screen shows each
-            prompt in turn, a tap goes back one. Without a card, nothing changes. Reader: esp32/tools/sd_session.py.
+            prompt in turn, a tap goes back one. With prompts1.txt ... prompts9.txt, a tap after the last prompt starts a new
+            session with the next file. Without a card, nothing changes. Reader: esp32/tools/sd_session.py.
     config TASR_SD_CLK
         int "microSD CLK GPIO"
         depends on TASR_SDLOG

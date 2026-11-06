@@ -1,0 +1,39 @@
+# speaker: write the session folders against a speaker code on the paper sheet (never a name)
+# condition: quiet room, about 15 cm, imitated dysarthria (stress test only, never reported as dysarthric accuracy)
+# read slowly, about one syllable a second; pause at each '...'; soften or drop sounds in brackets; breathy, flat voice
+# 25 phrases from phrases_example.txt (phrase mode on) and 10 sentences not on the list
+i am hungry | i... am... hun-gee
+good morning | goo... mor-nin
+i am in pain | i... am... in... pay(n)
+how are you | how... ah... you
+no | nnno
+what time is dinner | wha... tie(m)... ih... dih-ner
+help | heh...(lp)
+please | pee...(z)
+the weather is nice today | the... weh-ther... ih nie(s)... tuh-day
+i finished my homework | i... fih-nish... my... home-wer
+i am tired | i... am... tie-er
+i want to go outside | i... wan... to... go... ow-sie
+can you repeat that | ca... you... ree-pee... da
+i need my medicine | i... nee... my... meh-di-sin
+call the nurse | caw... the... nur(s)
+where did you put my glasses | where... di... you... pu(t)... my... gla-sih
+can you open the window | ca... you... oh-pen... the... win-doh
+i do not understand | i... do... nah... un-der-stan
+i love you | i... luh... you
+the dog wants to go for a walk | the... daw... wan... to... go... fo... a... wa(k)
+good night | goo... nie(t)
+thank you | tan... you
+turn on the lights | tur(n)... on... the... lie(ts)
+i need the bathroom | i... nee... the... ba-room
+i am cold | i... am... coh(ld)
+i am hot | i... am... ha(t)
+yes | yeh...(s)
+the bus is late again | the... buh... ih... lay... uh-gen
+i need water | i... nee(d)... wa-(t)er
+turn off the lights | tur... of... the... lie(ts)
+call my mom | caw... my... mah
+please wait | pee... way(t)
+please pass me the remote | pee... pa... me... the... ree-moh
+i want to watch a movie tonight | i... wan... to... wa(tch)... a... moo-vee... tuh-nie(t)
+my brother is coming over later | my... bruh-er... ih... cuh-min... oh-ver... lay-er

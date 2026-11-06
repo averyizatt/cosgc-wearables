@@ -1,0 +1,38 @@
+# speaker: write the session folders against a speaker code on the paper sheet (never a name)
+# condition: a noisier place (hallway, lab, cafeteria), about 50 cm from the board, normal speech
+# 25 phrases from phrases_example.txt (phrase mode on) and 10 sentences not on the list
+my brother is coming over later
+i love you
+how are you
+call my mom
+please
+i am hot
+i need water
+i need the bathroom
+please wait
+i need my medicine
+yes
+where did you put my glasses
+i am hungry
+turn on the lights
+i want to go outside
+good morning
+can you open the window
+help
+what time is dinner
+turn off the lights
+the weather is nice today
+can you repeat that
+thank you
+the bus is late again
+i want to watch a movie tonight
+no
+i am tired
+good night
+i do not understand
+the dog wants to go for a walk
+i finished my homework
+please pass me the remote
+i am cold
+i am in pain
+call the nurse

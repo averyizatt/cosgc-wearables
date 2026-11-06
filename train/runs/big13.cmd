@@ -14,10 +14,13 @@ set P=%D%\packed
 set PY=G:\cosgc\venv\Scripts\python.exe -u
 set N=big13
 set H=F03,M07,F04,M09,CF03,CF05,CM05,CM10
+rem big13.cmd now: start at once instead of waiting for 01:00
+if "%1"=="now" goto go
 :t
 for /f %%h in ('powershell -NoProfile -Command "(Get-Date).Hour"') do set HH=%%h
 if %HH% GEQ 7 (timeout /t 120 >nul & goto t)
 if %HH% LSS 1 (timeout /t 120 >nul & goto t)
+:go
 echo start %date% %time%
 %PY% split_speakers.py %P%\uaspeech_train_b13.jsonl %P%\uaspeech_train_b13_held.jsonl --drop %H% || (echo split failed & exit /b 1)
 %PY% split_speakers.py %D%\uaspeech_test_b2.jsonl %D%\uaspeech_test_b2_held.jsonl --keep %H% || (echo split failed & exit /b 1)

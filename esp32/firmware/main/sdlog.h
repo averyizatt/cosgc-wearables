@@ -31,4 +31,5 @@ const char *sdlog_prompt(void);  // the words of the next prompt (scored against
 const char *sdlog_cue(void);     // what the screen shows for it: a "text | cue" line's cue (e.g. a phonetic spelling), else the text
 int sdlog_prompt_pos(int *count);  // 1-based position of the current prompt; *count: how many there are
 void sdlog_prompt_back(void);    // a tap: the previous prompt again
+bool sdlog_next_session(void);   // a tap after the last prompt: a new session folder with the next prompt file
 void sdlog_utt(const sdlog_utt_t *u);  // write the utterance, then move to the next prompt
