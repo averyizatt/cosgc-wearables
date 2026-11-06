@@ -186,7 +186,9 @@ static void capture_task(void *arg)
         const int down = gpio_get_level(CONFIG_TASR_PTT_GPIO) == 0 || api_talk_held();  // button to GND (pull-up), or a client's virtual button
         if (down != state) {
             if (!seen++) seen_at = queued;  // the first block that read the new state
-            if (seen >= 2) {                // stable for 40 ms
+            // a press counts after 40 ms; a release only after 100 ms, so a contact that flickers mid-sentence (seen on a protoboard
+            // button: one sentence split in two) does not end the utterance. The utterance still ends at the first released sample.
+            if (seen >= (down ? 2 : 5)) {
                 state = down;
                 seen = 0;
                 api_button(down);
