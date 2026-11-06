@@ -345,8 +345,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
     api_final(p->text, p->n_utt / 16000.0, after, cl, cs);
     if (p->raw && api_dump_on() && p->n_raw) api_audio(p->raw, p->n_raw);
-    if (sdlog_on()) {
-        oled_status("saving...");
+    if (sdlog_on()) {  // copied and handed to the card's writer task: returns at once
         const sdlog_utt_t u = {
             // the recording buffer holds the first 20 s (and only the pre-roll for a streaming model without the full pass)
             .audio = p->utt, .n_audio = (!p->st || MIC_FINAL_FULL) ? (p->n_utt < PTT_CAP ? p->n_utt : PTT_CAP) : 0,

@@ -1563,8 +1563,66 @@ Host check before flashing:
             - The firmware's phrase rule (25 phrases, threshold −0.119), run on the host engine with big7 + LM.
             - Clips: Windows text-to-speech, two voices.
             - Results: 50 of 50 list clips gave the right phrase; 0 of 20 off-list clips were replaced by a phrase. Free decoding was already right on all 50 list clips and on 16 of the 20 off-list clips, so this checks the pipeline, not the benefit.
-            - A run on the same clips passed through dysim at severity 0.8 and 1.2 (six motor-speech conditions) is in progress.
-Result:     not run yet: the board has not been flashed with this build, and the SD slot is untested.
+            - The same 70 clips through `dysim.py demo` (transparent render), six motor-speech conditions (flaccid, spastic, ataxic,
+              hypokinetic, ALS, CP), 420 clips per severity:
+
+| Severity | List clips: right phrase / wrong phrase / free text | Free decoding alone, list clips fully right (WER) | Off-list clips wrongly replaced | Off-list WER |
+|---|---|---|---|---|
+| 0.8 | 296 / 0 / 4 of 300 | 254 of 300 (6.4 %) | 0 of 120 | 12.7 % |
+| 1.2 | 268 / 23 / 9 of 300 | 205 of 300 (18.4 %) | 17 of 120 (14 %) | 27.1 % |
+
+            On simulated speech, phrase mode lifts fully-right list utterances from 85 % to 99 % (severity 0.8) and from 68 % to 89 % (1.2).
+            At 1.2, 14 % of off-list utterances are replaced by a wrong phrase, against the 5 % the threshold allows on TORGO test. The
+            threshold was set for real dysarthric speech, and severe simulated speech pushes free decoding's score down. Simulated, so
+            only a sign of where to look on the board.
+            Host tools: `esp32/host/eval_cli.py` (now also takes plain WAV manifests) and the firmware's rule re-implemented in a scratch script.
+Result:     first session 2026-11-06, about 11:50, one typical speaker (a club member; the speaker line was left as CODE-HERE),
+            normal speech, `prompts_session.txt`, card SD32G (FAT32). The card mounted at the first boot (LDO 4). Session s0001 holds a
+            first attempt of 5 utterances; the board then restarted when the laptop opened its serial port, and s0002 is the full run.
+            Recordings stay on the card.
+
+s0002, 35 prompts (25 list phrases, 10 sentences not on the list), board engine, big7 + LM, phrase mode with 25 phrases:
+
+| Text | WER | Fully right |
+|---|---|---|
+| shown (final, phrase mode) | 7.87 % | 29 / 35 |
+| final, free decoding | 10.24 % | 27 / 35 |
+| live (streaming, finished at the release) | 11.81 % | 26 / 35 |
+
+- Phrase mode replaced the free text 23 times, always with the right phrase. It corrected two free-decoding errors: "play" →
+  "please" (gap −0.013), and "i do not under the" → "i do not understand" (−0.022).
+- It missed one list phrase, "please wait" (free text "please ease wait", gap −0.261 against the threshold −0.119).
+- "i need the bathroom" was read as "i need to use the bathroom" (a reader paraphrase, not a recognition error). It was rightly not replaced (−0.275).
+- Off-list sentences: none replaced; the closest was "what time is dinner" (6.5 s held), whose best phrase "yes" came within
+  −0.165 of the threshold. Lowering the threshold to catch "please wait" would have turned it into "yes". Threshold unchanged;
+  one session is too small to refit it, and it would be fitted on its own test.
+- Levels (medians): speech −34.9 dBFS, noise −56.8 dBFS (22 dB apart). Final text 1.77 s after the release (median); for
+  holds of 4–6.5 s, 3.0–4.5 s.
+- Card writes took 0.18–2.13 s each, after the text was shown. The firmware now writes from a task of its own (`sdlog.c`,
+  queue of 4), so the recognizer only copies the audio. Built; not yet on the board.
+
+**Finding 52:** on the board's own microphone, with a person speaking, the device gets 29 of 35 prompts fully right (WER 7.9 %), against 27 without
+phrase mode. Phrase mode made no wrong replacement in 35 utterances. One typical speaker and one session, so this checks the
+whole device pipeline (button, microphone, full-context pass, phrase mode, SD log) end to end, not accuracy for dysarthric speakers.
+
+### E24. UASpeech in training, whole speakers held out (queued 2026-11-06 for 01:00)
+
+Question:   E11 added UASpeech (all 28 speakers) and could only be tested on the same people. Does UASpeech help recognition of
+            dysarthric speakers the model never heard, on UASpeech and on TORGO?
+Held out:   chosen before any result, from the UASpeech paper's intelligibility table (doc/is2008_kim.pdf, Table 1), one dysarthric speaker
+            per band, two women and two men: F03 (very low, 6 %), M07 (low, 28 %), F04 (mid, 62 %), M09 (high, 86 %). Controls: CF03,
+            CF05, CM05, CM10. M08, M10, M12, M14 and M16 had no rating in that table, so they were not candidates.
+Data:       big7's list (150 h) plus UASpeech B1 + B3 of the other 20 speakers (`train/split_speakers.py`; 17 850 clips, 12.27 h, of
+            which dysarthric 7.93 h; each word is recorded on two microphones, M2 and M5, so about half that is distinct speech).
+            Test: UASpeech B2, M5, of the 8 held-out speakers (2036 clips, 1.40 h).
+            The held-out speakers' B2 words include the common words, digits, letters and commands that other speakers say in B1/B3,
+            so this is new people on partly familiar words, as on TORGO.
+Change:     big7's recipe; steps 6000 → 6500 so TORGO and LibriSpeech are seen as often (162 h against 150 h);
+            `--dys_sources torgo,uaspeech` so the mel-level simulation never touches UASpeech. Main environment (torch 2.14.1), as big7.
+Recipe:     `train/runs/big13.cmd`. Checked: the five-manifest list loads on the PC (100 163 clips, 162 h).
+Measure:    big13 against big7, paired: TORGO test (engine + LM, float), LibriSpeech, the held-out UASpeech speakers (float). The full B2
+            score is also computed, but it includes 20 speakers big13 trained on: not a result.
+Result:     not run yet.
 
 ### Seeds (queued 2026-11-03)
 

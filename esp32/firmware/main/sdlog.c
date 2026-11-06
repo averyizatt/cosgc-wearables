@@ -24,6 +24,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "sdmmc_cmd.h"
 
@@ -37,6 +40,16 @@ static char *s_ptext;              // prompts.txt, lines split in place
 static const char *s_prompt[MAX_PROMPTS];  // the words to score against
 static const char *s_cue[MAX_PROMPTS];     // what the screen shows ("text | cue" lines; otherwise the text itself)
 static int s_np, s_pi;             // prompts, the current one (0-based)
+// The card is written by a task of its own: a write takes 0.2 to 2 s (the card's own housekeeping), and the recognizer must not
+// wait for it. sdlog_utt copies the audio and hands over the log line; the writer adds the levels and file names.
+typedef struct {
+    cJSON *j;          // the log line without levels and file names
+    int16_t *pcm;      // audio, then raw, in one PSRAM block (NULL: copy failed, the line is still written)
+    int n_audio, n_raw, pre, utt;
+    int64_t t0;
+} job_t;
+static QueueHandle_t s_jobs;
+static void writer_task(void *arg);
 
 static uint32_t fnv1a(const uint8_t *p, uint32_t n)
 {
@@ -182,7 +195,8 @@ void sdlog_start(const void *model, uint32_t model_bytes)
     if (f) fclose(f);
     free(txt);
     cJSON_Delete(j);
-    s_on = f != NULL;
+    s_jobs = xQueueCreate(4, sizeof(job_t));
+    s_on = f != NULL && s_jobs && xTaskCreate(writer_task, "sd_write", 6144, NULL, 2, NULL) == pdPASS;
     printf("sd: card %s, %llu MB, logging to %s (model %s), %d prompts\n", card->cid.name,
            ((unsigned long long)card->csd.capacity) * card->csd.sector_size / (1024 * 1024), s_dir, hex, s_np);
 }
@@ -200,23 +214,62 @@ void sdlog_prompt_back(void)
     if (s_pi > 0) s_pi--;
 }
 
+static void writer_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        job_t jb;
+        xQueueReceive(s_jobs, &jb, portMAX_DELAY);
+        char wav[48], raw[48], name[16], rname[16];
+        snprintf(name, sizeof(name), "u%04d.wav", jb.utt);
+        snprintf(rname, sizeof(rname), "u%04dr.wav", jb.utt);
+        snprintf(wav, sizeof(wav), "%s/%s", s_dir, name);
+        snprintf(raw, sizeof(raw), "%s/%s", s_dir, rname);
+        const int16_t *audio = jb.pcm, *rawp = jb.pcm ? jb.pcm + jb.n_audio : NULL;
+        const bool ok_wav = audio && write_wav(wav, audio, jb.n_audio);
+        const bool ok_raw = rawp && jb.n_raw > 0 && write_wav(raw, rawp, jb.n_raw);
+        float speech = -120.f, noise = -120.f, peak = -120.f;
+        if (rawp && jb.n_raw > 0) levels(rawp, jb.n_raw, jb.pre, &speech, &noise, &peak);
+        else if (audio) levels(audio, jb.n_audio, jb.pre, &speech, &noise, &peak);
+        heap_caps_free(jb.pcm);
+        cJSON *j = jb.j;
+        cJSON_AddNumberToObject(j, "speech_db", roundf(speech * 10) / 10);
+        cJSON_AddNumberToObject(j, "noise_db", roundf(noise * 10) / 10);
+        cJSON_AddNumberToObject(j, "peak_db", roundf(peak * 10) / 10);
+        if (ok_wav) cJSON_AddStringToObject(j, "wav", name);
+        if (ok_raw) cJSON_AddStringToObject(j, "raw", rname);
+        char *line = cJSON_PrintUnformatted(j);
+        cJSON_Delete(j);
+        char path[48];
+        snprintf(path, sizeof(path), "%s/log.jsonl", s_dir);
+        FILE *f = fopen(path, "a");
+        bool ok = f && line && fputs(line, f) >= 0 && fputc('\n', f) != EOF;
+        if (f) {
+            fflush(f);
+            fsync(fileno(f));
+            ok = fclose(f) == 0 && ok;
+        }
+        free(line);
+        if (!ok || !ok_wav) ESP_LOGW(TAG, "writing utterance %d to the card failed (card full or removed?)", jb.utt);
+        else printf("sd: %s/%s written in %lld ms\n", s_dir + sizeof(ROOT), name, (esp_timer_get_time() - jb.t0) / 1000);
+    }
+}
+
 void sdlog_utt(const sdlog_utt_t *u)
 {
     if (!s_on) return;
-    const int64_t t0 = esp_timer_get_time();
-    s_utt++;
-    char wav[48], raw[48], name[16], rname[16];
-    snprintf(name, sizeof(name), "u%04d.wav", s_utt);
-    snprintf(rname, sizeof(rname), "u%04dr.wav", s_utt);
-    snprintf(wav, sizeof(wav), "%s/%s", s_dir, name);
-    snprintf(raw, sizeof(raw), "%s/%s", s_dir, rname);
-    const bool ok_wav = write_wav(wav, u->audio, u->n_audio);
-    const bool ok_raw = u->raw && u->n_raw > 0 && write_wav(raw, u->raw, u->n_raw);
-    float speech, noise, peak;
-    if (u->raw && u->n_raw > 0) levels(u->raw, u->n_raw, u->pre, &speech, &noise, &peak);
-    else levels(u->audio, u->n_audio, u->pre, &speech, &noise, &peak);
+    job_t jb = {.utt = ++s_utt, .t0 = esp_timer_get_time(), .pre = u->pre, .n_audio = u->n_audio,
+                .n_raw = u->raw ? u->n_raw : 0};
+    jb.pcm = heap_caps_malloc(sizeof(int16_t) * (size_t)(jb.n_audio + jb.n_raw + 1), MALLOC_CAP_SPIRAM);
+    if (jb.pcm) {
+        memcpy(jb.pcm, u->audio, sizeof(int16_t) * jb.n_audio);
+        if (jb.n_raw) memcpy(jb.pcm + jb.n_audio, u->raw, sizeof(int16_t) * jb.n_raw);
+    } else {
+        ESP_LOGW(TAG, "no PSRAM to copy utterance %d: only its log line is written", jb.utt);
+    }
     cJSON *j = cJSON_CreateObject();
-    cJSON_AddNumberToObject(j, "utt", s_utt);
+    jb.j = j;
+    cJSON_AddNumberToObject(j, "utt", jb.utt);
     const char *pr = sdlog_prompt();
     if (pr) {
         cJSON_AddNumberToObject(j, "prompt_idx", s_pi + 1);
@@ -239,25 +292,11 @@ void sdlog_utt(const sdlog_utt_t *u)
     cJSON_AddNumberToObject(j, "pre_s", roundf(u->pre / 16.f) / 1000);
     cJSON_AddNumberToObject(j, "delay_ms", round(u->delay_ms));
     cJSON_AddNumberToObject(j, "press_s", round(u->press_s * 1000) / 1000);
-    cJSON_AddNumberToObject(j, "speech_db", roundf(speech * 10) / 10);
-    cJSON_AddNumberToObject(j, "noise_db", roundf(noise * 10) / 10);
-    cJSON_AddNumberToObject(j, "peak_db", roundf(peak * 10) / 10);
-    if (ok_wav) cJSON_AddStringToObject(j, "wav", name);
-    if (ok_raw) cJSON_AddStringToObject(j, "raw", rname);
-    char *line = cJSON_PrintUnformatted(j);
-    cJSON_Delete(j);
-    char path[48];
-    snprintf(path, sizeof(path), "%s/log.jsonl", s_dir);
-    FILE *f = fopen(path, "a");
-    bool ok = f && line && fputs(line, f) >= 0 && fputc('\n', f) != EOF;
-    if (f) {
-        fflush(f);
-        fsync(fileno(f));
-        ok = fclose(f) == 0 && ok;
+    if (xQueueSend(s_jobs, &jb, 0) != pdTRUE) {  // the writer is four utterances behind: drop this one rather than make the user wait
+        ESP_LOGW(TAG, "card writes are behind: utterance %d not saved", jb.utt);
+        cJSON_Delete(j);
+        heap_caps_free(jb.pcm);
     }
-    free(line);
-    if (!ok || !ok_wav) ESP_LOGW(TAG, "writing utterance %d to the card failed (card full or removed?)", s_utt);
-    else printf("sd: %s/%s written in %lld ms\n", s_dir + sizeof(ROOT), name, (esp_timer_get_time() - t0) / 1000);
     if (s_pi < s_np) s_pi++;
 }
 

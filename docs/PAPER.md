@@ -122,7 +122,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | Front-end reuse in the final pass | identical logits on host, 24 % less CPU; on chip pending | E14 |
 | Last words on screen after release | 0.16 s (stream finished first) | E14 |
 | Free PSRAM at a 20 s utterance | 2.97 MB of 32 | E12 |
-| Live use by people | **not yet done**: only clips played from a laptop | E12, E14 |
+| Live use by people | one typical speaker, 35 prompts at about 15 cm: WER 7.9 % shown (10.2 % without phrase mode), 29 of 35 fully right, no wrong phrase; final text 1.8 s after release (median). No dysarthric speaker yet | E23 (F52) |
 
 ## 7. Reference points
 
