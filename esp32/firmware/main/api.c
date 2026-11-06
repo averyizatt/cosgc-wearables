@@ -111,6 +111,8 @@ void api_human_partial(void) { s_pending = 1; }
 bool api_dump_on(void) { return s_dump; }
 static volatile int s_mic = 1;
 int api_mic(void) { return s_mic; }
+static volatile int s_chunk;  // live text: encoder frames per streaming chunk (0: the model's own)
+int api_chunk(void) { return s_chunk; }
 
 // JSON string escaping into dst (UTF-8 passes through); returns bytes written, always terminated
 static int esc(char *dst, int max, const char *s)
@@ -332,6 +334,11 @@ void api_handle_line(const char *text)
         (void)ba;
         if (cJSON_IsBool(lv)) { s_level_on = cJSON_IsTrue(lv); reply(id, cmd, true, NULL); }
         else if (cJSON_IsBool(du)) { s_dump = cJSON_IsTrue(du); reply(id, cmd, true, NULL); }
+        else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j, "chunk"))) {  // {"cmd":"set","chunk":16}: live text every 0.64 s
+            const int c = cJSON_GetObjectItemCaseSensitive(j, "chunk")->valueint;
+            if (c == 0 || c == 16 || c == 24 || c == 32 || c == 48 || c == 64) { s_chunk = c; reply(id, cmd, true, NULL); }
+            else reply(id, cmd, false, "chunk is 0 (the model's), 16, 24, 32, 48 or 64");
+        }
 #ifdef CONFIG_TASR_MIC2
         else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j, "mic"))) {  // {"cmd":"set","mic":2}: which microphone the recognizer hears
             const int m = cJSON_GetObjectItemCaseSensitive(j, "mic")->valueint;

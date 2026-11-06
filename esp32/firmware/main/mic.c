@@ -315,6 +315,7 @@ typedef struct {
     int n_raw2;
     int taps;          // taps in the current burst, acted on TAP_GAP_US after the last one
     int64_t last_tap_us;
+    int n_heard;       // samples of utt the final pass heard, before its padding
 } ptt_t;
 #define TAP_GAP_US 700000  // a burst of taps ends after this long without another
 // prompted recording (sdlog.c): the next prompt on the screen and its number in the status line
@@ -374,6 +375,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
             ptt_partial(p->text);
         }
         int n = p->n_utt;
+        p->n_heard = n;
         if (n + PTT_PAD <= PTT_CAP) {  // silence after the release: fewer cut-off and empty short words (docs/EXPERIMENTS.md, E13)
             memset(p->utt + n, 0, sizeof(int16_t) * PTT_PAD);
             n += PTT_PAD;
@@ -407,7 +409,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     if (sdlog_on()) {  // copied and handed to the card's writer task: returns at once
         const sdlog_utt_t u = {
             // the recording buffer holds the first 20 s (and only the pre-roll for a streaming model without the full pass)
-            .audio = p->utt, .n_audio = (!p->st || MIC_FINAL_FULL) ? (p->n_utt < PTT_CAP ? p->n_utt : PTT_CAP) : 0,
+            .audio = p->utt, .n_audio = (!p->st || MIC_FINAL_FULL) ? (full ? p->n_heard : (p->n_utt < PTT_CAP ? p->n_utt : PTT_CAP)) : 0,
             .raw = p->raw, .n_raw = p->raw ? p->n_raw : 0, .raw2 = p->raw2, .n_raw2 = p->raw2 ? p->n_raw2 : 0, .mic = api_mic(),
             .pre = p->pre_used, .text = p->text, .free_text = free_text, .stream_text = p->st ? stream : NULL,
             .phrase = pinfo.best, .phrase_gap = pinfo.gap, .phrase_thr = pinfo.thr, .phrase_n = pinfo.n,
@@ -459,7 +461,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
            p.st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
     show_prompt(&p);
     uint32_t rd = 0;  // samples taken from the ring
-    int active = 0, npre = 0, pw = 0;
+    int active = 0, npre = 0, pw = 0, chunk = 0;  // chunk: the live stream's (0: the model's own)
     led_set(LED_IDLE);
     for (;;) {
         const int n = (int)(xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY) / 2);
@@ -511,6 +513,17 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             api_state("listening");
         }
         if (p.taps && !active && esp_timer_get_time() - p.last_tap_us > TAP_GAP_US) ptt_taps(&p);  // a burst of taps has ended
+        if (p.st && !active && api_chunk() != chunk) {  // a client changed the live text's chunk: a new stream, between utterances
+            chunk = api_chunk();
+            tasr_nemo_stream_free(p.st);
+            p.st = tasr_nemo_stream_new(m, chunk, 0, dec);
+            if (p.st && MIC_FINAL_FULL) tasr_nemo_stream_keep(p.st, PTT_CAP);
+            printf("live text: chunk %d (%s)\n", chunk, p.st ? "ok" : "no memory");
+            if (!p.st) {  // back to the model's own chunk, which fitted at boot
+                p.st = tasr_nemo_stream_new(m, 0, 0, dec);
+                if (p.st && MIC_FINAL_FULL) tasr_nemo_stream_keep(p.st, PTT_CAP);
+            }
+        }
         tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
         rd += n;
         if ((api_dump_on() || sdlog_on()) && !p.raw) p.raw = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);

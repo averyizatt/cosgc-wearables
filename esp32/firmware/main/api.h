@@ -32,7 +32,8 @@ bool api_talk_held(void);
 
 // the microphone audio of each utterance, before gain control, for measuring (only after {"cmd":"set","dump":true})
 bool api_dump_on(void);
-int api_mic(void);  // the microphone the recognizer hears: 1 (built in) or 2 (CONFIG_TASR_MIC2), set with {"cmd":"set","mic":2}
+int api_mic(void);
+int api_chunk(void);  // live text: encoder frames (40 ms) per streaming chunk, 0 = the model's own; {"cmd":"set","chunk":16}  // the microphone the recognizer hears: 1 (built in) or 2 (CONFIG_TASR_MIC2), set with {"cmd":"set","mic":2}
 void api_audio(const int16_t *pcm, int n);
 
 // Phrase mode: the list a client loaded with the "phrases" command (docs/API.md), as "text<TAB>token ids" lines, kept in NVS
