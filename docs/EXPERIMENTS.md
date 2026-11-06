@@ -1503,7 +1503,7 @@ Device engine, TORGO test, int8 + LM, big7 → big11, paired CI:
 | F03 / M05 | 29.77 → 29.63 / 46.14 → 48.00 | 39.23 → 39.02 / 58.79 → 61.45 (+0.58..+4.60) |
 | FC03 / MC04 | 7.74 → 8.72 / 9.14 → 10.00 | 11.72 → 12.27 / 13.78 → 15.39 |
 
-**Finding 50:** distilling from this teacher makes the on-device model worse. On the engine, final WER rises by 0.8 points (CI +0.4..+1.3), about 20 times big7's seed spread (sd 0.04), so the torch-version difference is unlikely to explain it. Dysarthric speakers are not clearly better or worse. The likely cause is the teacher itself. Fitting Parakeet's encoder to our 1024-piece tokenizer with a new head lost most of its typical-speech skill: LibriSpeech went 2.62 → 9.17, and TORGO controls are at 14.25 against big7's 8.75. Only on dysarthric TORGO speakers (35.34 against 39.11) and UASpeech's dysarthric speakers was it better than the student. big11 inherited that profile: in float it is better on unseen dysarthric speech (UASpeech dysarthric 89.90 → 85.41) and worse on typical speech (LibriSpeech 4.19 → 5.79, UASpeech controls +3.3). A useful teacher here would first have to beat the student on typical speech, for instance by keeping Parakeet's own tokenizer and distilling across tokenizers, or by applying the teacher term only to dysarthric clips. Neither is tested.
+**Finding 50** (corrected by Finding 51: the loss comes from the LM step, not the acoustic model)**:** distilling from this teacher makes the on-device model worse. On the engine, final WER rises by 0.8 points (CI +0.4..+1.3), about 20 times big7's seed spread (sd 0.04), so the torch-version difference is unlikely to explain it. Dysarthric speakers are not clearly better or worse. The likely cause is the teacher itself. Fitting Parakeet's encoder to our 1024-piece tokenizer with a new head lost most of its typical-speech skill: LibriSpeech went 2.62 → 9.17, and TORGO controls are at 14.25 against big7's 8.75. Only on dysarthric TORGO speakers (35.34 against 39.11) and UASpeech's dysarthric speakers was it better than the student. big11 inherited that profile: in float it is better on unseen dysarthric speech (UASpeech dysarthric 89.90 → 85.41) and worse on typical speech (LibriSpeech 4.19 → 5.79, UASpeech controls +3.3). A useful teacher here would first have to beat the student on typical speech, for instance by keeping Parakeet's own tokenizer and distilling across tokenizers, or by applying the teacher term only to dysarthric clips. Neither is tested.
 - First attempt, 2026-11-05 07:24, failed while loading the model.
 - After the motherboard swap, Windows Smart App Control is on, and it blocked a pandas DLL in the NeMo environment ("An Application Control policy has blocked this file"). No teacher was trained.
 - The queue went on to the seed runs. big11 waits for a working NeMo environment on the PC.
@@ -1519,7 +1519,52 @@ Change:     big11 exactly, plus `--teacher_groups dysarthric`. The teacher term 
 Recipe:     `train/runs/big12.cmd` (teacher110 and its offset, +4, from E21).
 Checked:    PC smoke test, 100 full-context steps on LibriSpeech 100 + TORGO train: the teacher term was active on 21 of 100 batches.
 Measure:    as E21, against big7. Same torch-version caveat as E21.
-Result:     running.
+Result:     ran 2026-11-06 04:08–06:49. 6000 steps in 7511 s (1.25 s/step). The teacher term was on about 23–26 of every 100 steps. Validation (mixed TORGO test + LibriSpeech, float): 6.87 at the start, 5.73 at the end (big11: 7.16).
+
+Float, greedy (full / live chunk 64):
+
+| Model | TORGO all | TORGO control | TORGO dysarthric | UASpeech all | UASpeech control | UASpeech dysarthric | LibriSpeech |
+|---|---|---|---|---|---|---|---|
+| big7 | 18.46 | 8.75 / 14.06 | 39.11 / 50.60 | 65.46 | 37.29 / 40.74 | 89.90 / 94.86 | 4.19 / 6.50 |
+| big11 | 18.60 | 9.35 / 15.46 | 38.26 / 51.01 | 64.60 | 40.62 / 43.67 | 85.41 / 98.08 | 5.79 / 7.76 |
+| big12 | 18.10 | 8.41 / 13.96 | 38.70 / 50.46 | 62.03 | 39.81 / 42.41 | 81.30 / 92.78 | 4.20 / 6.85 |
+
+Device engine, TORGO test, final text (full context), big7 → model, paired CI:
+
+| | int8, greedy, no LM | int8 + LM (deployed decoding) |
+|---|---|---|
+| big11, all | 18.62 → 18.59 (−0.50..+0.41) | 17.03 → 17.84 (+0.38..+1.26) |
+| big11, control | 8.93 → 9.38 (+0.03..+0.88) | 8.37 → 9.30 (+0.54..+1.31) |
+| big11, dysarthric | 39.20 → 38.17 (−2.06..−0.07) | 35.43 → 35.98 (−0.58..+1.65) |
+| big12, all | 18.62 → 18.16 (−1.00..+0.03) | 17.03 → 17.96 (+0.43..+1.47) |
+| big12, control | 8.93 → 8.35 (−1.01..−0.15) | 8.37 → 8.76 (+0.00..+0.76) |
+| big12, dysarthric | 39.20 → 39.02 (−1.44..+1.08) | 35.43 → 37.52 (+0.64..+3.38); M05 46.14 → 51.73 |
+
+big12, live text (chunk 32) + LM: all 23.31 → 23.45 (−0.33..+0.60), dysarthric 45.99 → 46.73 (−0.35..+1.83). Against big7's three-seed pool, final + LM: +0.98 (+0.51..+1.44).
+
+What the LM gains (no LM → LM, final, engine): big7 −1.59 overall and −3.77 on dysarthric speakers; big11 −0.75 and −2.19; big12 −0.20 and −1.50.
+
+**Finding 51:** distillation from the teacher changes how much the language model helps, and that, not the acoustic model, is what made both distilled models worse on the device. On the engine without the LM, big12 is at least as good as big7 (controls −0.6, CI −1.0..−0.2), and big11 equals it overall, with dysarthric speakers −1.0 (CI −2.1..−0.1). With the LM, the LM's gain shrinks from 1.6 points (big7) to 0.75 (big11) and 0.2 (big12), and both end up worse. The LM weight and token bonus (0.30 and 0.50) were set for big2–big7. The teacher's soft targets change how sure the student is of each token, so those values likely no longer fit. Retuning them for a distilled model needs a development set that is not TORGO test; until that exists, neither model can be deployed. In float, big12 is the best model so far on unseen dysarthric speech (UASpeech dysarthric 89.90 → 81.30) without big11's loss on typical speech (LibriSpeech 4.20).
+**Correction to Finding 50:** the teacher did not make the acoustic model worse on TORGO. The deployed system got worse through the LM interaction above. big11's typical-speech loss (LibriSpeech 4.19 → 5.79, float) stands, and limiting the teacher to dysarthric clips (big12) removes it.
+
+### E23. Live sessions on the board with the microSD log (prepared 2026-11-06)
+
+Question:   on the board's own microphone, with people speaking, how often is the live and the final text right, and how often does
+            phrase mode pick the right phrase or a wrong one?
+Device:     big7_q121 + LM, `oido_p4_2c` with the SD log (docs/P4.md, "microSD session log"), the 25 phrases of
+            `esp32/tools/phrases_example.txt` loaded (phrase mode).
+Sessions:   club members, each under a speaker code, about 15 cm from the board.
+            - `prompts_session.txt`: the 25 list phrases and 10 sentences not on the list, mixed.
+            - `prompts_imitated.txt`: the same prompts read as imitated dysarthria (slow, pauses, soft endings, breathy; phonetic cues on the screen).
+            Imitated speech is a stress test of the device and of phrase mode only. It is never reported as accuracy for dysarthric
+            speakers, and never used for training. The rows stay labelled "imitated".
+Score:      `esp32/tools/sd_session.py score`.
+Host check before flashing:
+            - The firmware's phrase rule (25 phrases, threshold −0.119), run on the host engine with big7 + LM.
+            - Clips: Windows text-to-speech, two voices.
+            - Results: 50 of 50 list clips gave the right phrase; 0 of 20 off-list clips were replaced by a phrase. Free decoding was already right on all 50 list clips and on 16 of the 20 off-list clips, so this checks the pipeline, not the benefit.
+            - A run on the same clips passed through dysim at severity 0.8 and 1.2 (six motor-speech conditions) is in progress.
+Result:     not run yet: the board has not been flashed with this build, and the SD slot is untested.
 
 ### Seeds (queued 2026-11-03)
 

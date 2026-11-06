@@ -108,6 +108,33 @@ menu "tinyasr"
             Streaming models only. When speech ends (button released, or the pause), the whole utterance runs through the
             encoder with full context, which is much more accurate (docs/EXPERIMENTS.md, E12) but takes about 0.64 times
             the utterance's length on two ESP32-P4 cores. Utterances beyond the 20 s recording buffer keep the streaming text.
+    config TASR_SDLOG
+        bool "Microphone mode with the button: log every utterance to the microSD card"
+        default n
+        depends on SOC_SDMMC_HOST_SUPPORTED
+        help
+            Each boot with a card makes a session folder (s0001, s0002, ...) holding a WAV per utterance (what the model heard,
+            and the microphone before gain control) and log.jsonl: prompt, live and final text, the closest list phrase, the
+            confidence, levels and timings. A prompts.txt in the card's root turns on prompted recording: the screen shows each
+            prompt in turn, a tap goes back one. Without a card, nothing changes. Reader: esp32/tools/sd_session.py.
+    config TASR_SD_CLK
+        int "microSD CLK GPIO"
+        depends on TASR_SDLOG
+        default 43
+    config TASR_SD_CMD
+        int "microSD CMD GPIO"
+        depends on TASR_SDLOG
+        default 44
+    config TASR_SD_D0
+        int "microSD D0 GPIO (D1..D3 follow on the next three GPIOs)"
+        depends on TASR_SDLOG
+        default 39
+    config TASR_SD_LDO
+        int "On-chip LDO channel powering the microSD pins; -1 = none"
+        depends on TASR_SDLOG
+        default 4
+        help
+            On the ESP32-P4 the SD pins' supply domain is usually fed from LDO_VO4 (as on Espressif's and Waveshare's boards).
     config TASR_SEG_HANG_MS
         int "Pause (ms) that ends an utterance in microphone mode"
         default 800

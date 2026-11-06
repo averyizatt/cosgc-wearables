@@ -50,5 +50,8 @@ CONFIG_TASR_OLED_ADDR=0x3C
 CONFIG_TASR_SEG_HANG_MS=800
 # final text from a full-context pass (0.64 x the utterance on two cores): WER 25.1 -> 19.8 on TORGO test, docs/EXPERIMENTS.md E12
 CONFIG_TASR_FINAL_FULL=y
+# microSD session log (sdlog.c): the board's slot on GPIO 43/44/39-42, pins powered from on-chip LDO 4; long file names for log.jsonl
+CONFIG_TASR_SDLOG=y
+CONFIG_FATFS_LFN_HEAP=y
 CONFIG_TASR_PTT_GPIO=21
 CONFIG_TASR_LED_GPIO=-1

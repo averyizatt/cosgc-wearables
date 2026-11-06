@@ -1,0 +1,38 @@
+# speaker: CODE-HERE (a code, never a name)
+# style: normal speech, about 15 cm from the board
+# 25 phrases from phrases_example.txt (phrase mode on) and 10 sentences not on the list, mixed
+yes
+the weather is nice today
+i need water
+call the nurse
+where did you put my glasses
+i am in pain
+thank you
+turn on the lights
+i want to watch a movie tonight
+no
+i need my medicine
+good morning
+can you open the window
+help
+i am hungry
+my brother is coming over later
+please
+i need the bathroom
+turn off the lights
+the bus is late again
+call my mom
+i am tired
+how are you
+please pass me the remote
+i want to go outside
+good night
+i finished my homework
+i love you
+can you repeat that
+what time is dinner
+please wait
+i do not understand
+the dog wants to go for a walk
+i am cold
+i am hot

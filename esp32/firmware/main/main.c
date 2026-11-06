@@ -19,6 +19,7 @@
 #include "ble.h"
 #include "led.h"
 #include "mic.h"
+#include "sdlog.h"
 
 static const char *TAG = "tinyasr";
 
@@ -227,6 +228,7 @@ static void run_nemo(const uint8_t *blob, uint32_t blob_size)
              (unsigned)tasr_nemo_weight_bytes(m), (unsigned)moved, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 #ifdef CONFIG_TASR_MODE_MIC
+    sdlog_start(blob, blob_size);  // microSD session log (CONFIG_TASR_SDLOG; nothing happens without a card)
     extern void run_mic_nemo(const tasr_nemo_t *m, struct tasr_decoder *dec);
     run_mic_nemo(m, dec);
 #endif

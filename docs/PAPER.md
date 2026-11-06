@@ -76,7 +76,8 @@ TORGO test, device engine, int8 + LM unless noted. Result files: `~/lmtest/<mode
 | 7 | big9 | + 120 h of waveform-simulated speech (round 2), same steps | 25.09 / 46.75 | 18.41 / 36.76 | E15 | worse (CI +0.94..+1.84); confounded: real data seen half as often (F38) |
 | 8 | big10 | from row 6: the mel-level simulation replaced by 100 source hours of transparently rendered waveform simulation (round 4), steps scaled to keep real exposure | 22.80 / 46.04 | 16.64 / 35.41 | E16 | no change on dysarthric speakers (CI −1.47..+1.99); controls better; UASpeech dysarthric better, controls worse (F45) |
 | 9 | simpre | from row 6: the waveform simulation as a first stage (simtr360 + LibriSpeech, 4000 steps), then row 6's recipe | 23.78 / 46.34 | 17.19 / 35.29 | E20 | no change (final CI −0.20..+0.56; dysarthric −1.04..+0.76); live slightly worse; UASpeech dysarthric better (F48) |
-| 10 | big11 | from row 6: + distillation from a fine-tuned Parakeet 110M (weight 0.5, T 2, full-context batches) | 24.26 / 46.78 | 17.84 / 35.98 | E21 | worse (final CI +0.38..+1.26; controls +0.93); the teacher is weak on typical speech (LibriSpeech 9.17); UASpeech dysarthric better in float (F50) |
+| 10 | big11 | from row 6: + distillation from a fine-tuned Parakeet 110M (weight 0.5, T 2, full-context batches) | 24.26 / 46.78 | 17.84 / 35.98 | E21 | worse with the LM (final CI +0.38..+1.26); equal without it (−0.50..+0.41), so the loss is the LM step (F51); LibriSpeech 4.19 → 5.79 in float (F50) |
+| 11 | big12 | from row 10: the teacher term only on dysarthric clips | 23.45 / 46.73 | 17.96 / 37.52 | E22 | worse with the LM (final CI +0.43..+1.47; M05 +5.6); without it better than row 6 (−0.46, CI −1.00..+0.03; controls −0.58); float: UASpeech dysarthric 89.90 → 81.30, LibriSpeech 4.20 (F51). Needs an LM retune on a development set |
 
 Per speaker, final, row 6: F03 29.77, M05 46.14, FC03 7.74, MC04 9.14. Row 6 on other sets, float greedy: UASpeech 65.46 (shipped 72.8
 streaming), LibriSpeech 4.19 (shipped 4.01).
@@ -109,7 +110,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 - Language-model weight tuning, a wider beam and padding gave at most 0.3 points (F27).
 - 100 source hours of the waveform simulator, with real exposure held fixed, left TORGO's dysarthric speakers unchanged (big10, F45).
 - Putting it first, as a pre-training stage, did not either (simpre, F48).
-- Distillation from Parakeet 110M, refitted to our tokenizer, made the device model worse (final +0.8, CI +0.4..+1.3). The refitted teacher had lost most of its typical-speech accuracy, LibriSpeech 2.62 → 9.17 (big11, F50).
+- Distillation from Parakeet 110M, refitted to our tokenizer, made the deployed system worse (final +0.8, CI +0.4..+1.3), but through the language-model step: without the LM it equals big7, and limited to dysarthric clips (big12) it is better without the LM and best on UASpeech in float (F50, F51).
 
 ## 6. Device (table 2)
 
@@ -177,5 +178,6 @@ Finding:    one sentence for the paper (numbered).
 | Rotate held-out TORGO speakers, folds B and C (E19) | two test speakers are too few | done 2026-11-05 (F46, F47): the fine-tune's gain holds in every fold; big7's gain over big6 holds for controls and live text, not dysarthric final text |
 | Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
-| Teacher-student training from a fine-tuned Parakeet (CC-BY-4.0; 110 M, since 1.1 B does not fit a 12 GB card for training) (E21) | more accuracy at 19 M | done 2026-11-06 (F50): worse than big7; the teacher must first beat the student on typical speech (Parakeet's own tokenizer, or the teacher term on dysarthric clips only; untested) |
+| Teacher-student training from a fine-tuned Parakeet (CC-BY-4.0; 110 M, since 1.1 B does not fit a 12 GB card for training) (E21) | more accuracy at 19 M | done 2026-11-06 (F50, F51): big11 and big12 lose to big7 only through the LM step; big12 is better without it |
+| LM weight and token bonus for distilled models (big12), tuned on a development set that is not TORGO test | F51: the LM's gain shrank from 1.6 to 0.2 points | to do: needs that development set first |
 | Cite: TORGO (Rudzicz et al. 2012), UASpeech (Kim et al. 2008), LibriSpeech, MUSAN, Conformer, CTC, SpecAugment, WORLD (Morise et al. 2016), MFA (McAuliffe et al. 2017) and the LibriSpeech alignments (Lugosch et al. 2019), kNN-VC (Baas et al. 2023), Parakeet (NVIDIA), the SAP Challenge (Interspeech 2025), Oído | | add to log §8 |

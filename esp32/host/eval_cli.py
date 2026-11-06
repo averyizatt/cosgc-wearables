@@ -54,6 +54,9 @@ def main():
     os.makedirs(a.wavs, exist_ok=True)
     packs = {}
     for k, it in enumerate(items):
+        if "pack" not in it:  # a plain manifest: 16 kHz mono 16-bit WAV files
+            it["_wav"] = it["wav"]
+            continue
         it["_wav"] = os.path.join(a.wavs, f"{os.path.splitext(os.path.basename(a.manifest))[0]}_{it['off']}.wav")
         if os.path.exists(it["_wav"]):
             continue

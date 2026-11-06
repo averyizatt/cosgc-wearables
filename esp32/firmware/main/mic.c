@@ -22,6 +22,7 @@
 #include "led.h"
 #include "mic.h"
 #include "oled.h"
+#include "sdlog.h"
 
 #ifdef CONFIG_TASR_MODE_MIC
 #define RING_SAMPLES MIC_RING_SAMPLES  // mic.h
@@ -83,14 +84,22 @@ __attribute__((unused)) static void phrases_sync(void)
     tasr_nemo_set_phrases(s_phr);
     if (s_phr) printf("phrase mode: %d phrases\n", tasr_phrases_count(s_phr));
 }
-// after a full pass: the list phrase to show instead of the free text, or NULL
-__attribute__((unused)) static const char *phrase_pick(void)
+typedef struct {
+    const char *best;  // the closest list phrase, shown or not (NULL: no list)
+    float gap, thr;    // its score per frame minus free decoding's, and the threshold it had to clear
+    int n;             // phrases on the list
+} phrase_info_t;
+// after a full pass: the list phrase to show instead of the free text, or NULL; info (may be NULL) gets the closest phrase
+__attribute__((unused)) static const char *phrase_pick(phrase_info_t *info)
 {
+    if (info) *info = (phrase_info_t){0};
     if (!s_phr || tasr_phrases_frames(s_phr) <= 0) return NULL;
     float best, second;
     const int k = tasr_phrases_best(s_phr, &best, &second);
     const float gap = (best - tasr_phrases_free_score(s_phr)) / tasr_phrases_frames(s_phr);
-    return k >= 0 && gap > phrase_threshold(tasr_phrases_count(s_phr)) ? tasr_phrases_text(s_phr, k) : NULL;
+    const float thr = phrase_threshold(tasr_phrases_count(s_phr));
+    if (info && k >= 0) *info = (phrase_info_t){tasr_phrases_text(s_phr, k), gap, thr, tasr_phrases_count(s_phr)};
+    return k >= 0 && gap > thr ? tasr_phrases_text(s_phr, k) : NULL;
 }
 #ifdef CONFIG_TASR_BLE
 #define HAS_BLE true
@@ -246,7 +255,26 @@ typedef struct {
     char *text;
     int text_len;
     char idle[32];
+    int64_t press_us;  // when the button went down (for the SD log)
 } ptt_t;
+// prompted recording (sdlog.c): the next prompt on the screen and its number in the status line
+static void show_prompt(ptt_t *p)
+{
+    int count = 0;
+    const int pos = sdlog_prompt_pos(&count);
+    const char *pr = sdlog_prompt();
+    if (pr) {
+        static char line[300];
+        snprintf(p->idle, sizeof(p->idle), "%d/%d hold", pos, count);
+        snprintf(line, sizeof(line), "say: %s", sdlog_cue());
+        oled_partial(line);
+        printf("prompt %d/%d: %s\n", pos, count, pr);
+    } else if (count) {
+        snprintf(p->idle, sizeof(p->idle), "all done");
+        oled_partial("all prompts done");
+    }
+    oled_status(p->idle);
+}
 static void ptt_partial(const char *text)
 {
     printf("\r... %s", text);
@@ -258,8 +286,10 @@ static void ptt_partial(const char *text)
 // the utterance ends here: final text (released_us: when the button went up, or 0 at the utterance-mode limit)
 static void ptt_end(ptt_t *p, int64_t released_us)
 {
-    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap
+    if (p->n_utt - p->pre_used < PTT_MIN) {  // a tap (prompted recording: back to the previous prompt, to say it again)
+        if (sdlog_prompt_pos(NULL) > 1) sdlog_prompt_back();
         oled_status(p->idle);
+        show_prompt(p);
         led_set(LED_NOTHING);
         api_state("idle");
         return;
@@ -267,14 +297,21 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(LED_BUSY);
     api_state("processing");
     const int64_t t0 = esp_timer_get_time();
+    static char stream[4096];  // the live text at the end of the utterance, for the SD log
+    stream[0] = 0;
     // another press is already waiting: take the streaming text now rather than making that utterance wait for a full-context pass
     const int next_waiting = uxQueueMessagesWaiting(g_ptt) > 0;
     int full = 0;  // a full-context pass ran (it has a confidence)
-    if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) tasr_nemo_stream_finish(p->st, p->text, p->text_len);
-    else {
+    if (p->st && (next_waiting || !(MIC_FINAL_FULL && p->n_utt <= PTT_CAP))) {
+        tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+        snprintf(stream, sizeof(stream), "%s", p->text);
+    } else {
         full = 1;
-        if (p->st && p->n_utt >= PTT_PREVIEW) {  // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work)
+        // the words since the last chunk appear in under a second instead of after the whole pass (at most one chunk of work);
+        // when logging, always, so the log has the finished live text to compare with the final one
+        if (p->st && (p->n_utt >= PTT_PREVIEW || sdlog_on())) {
             tasr_nemo_stream_finish(p->st, p->text, p->text_len);
+            snprintf(stream, sizeof(stream), "%s", p->text);
             ptt_partial(p->text);
         }
         int n = p->n_utt;
@@ -291,7 +328,11 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     const double after = (t1 - (released_us ? released_us : t0)) / 1e3;
     float cs = full ? conf_score() : 0.f;
     int cl = full && p->text[0] ? conf_level(cs) : -1;
-    const char *ph = full ? phrase_pick() : NULL;
+    phrase_info_t pinfo;
+    const char *ph = full ? phrase_pick(&pinfo) : NULL;
+    if (!full) pinfo = (phrase_info_t){0};
+    static char free_text[4096];
+    snprintf(free_text, sizeof(free_text), "%s", p->text);
     if (ph) {  // a phrase from the user's list wins over the free text (the free text stays in the console log)
         printf("\r(free text: %s)\n", p->text);
         snprintf(p->text, p->text_len, "%s", ph);
@@ -304,9 +345,21 @@ static void ptt_end(ptt_t *p, int64_t released_us)
     led_set(p->text[0] ? LED_DONE : LED_NOTHING);
     api_final(p->text, p->n_utt / 16000.0, after, cl, cs);
     if (p->raw && api_dump_on() && p->n_raw) api_audio(p->raw, p->n_raw);
+    if (sdlog_on()) {
+        oled_status("saving...");
+        const sdlog_utt_t u = {
+            // the recording buffer holds the first 20 s (and only the pre-roll for a streaming model without the full pass)
+            .audio = p->utt, .n_audio = (!p->st || MIC_FINAL_FULL) ? (p->n_utt < PTT_CAP ? p->n_utt : PTT_CAP) : 0,
+            .raw = p->raw, .n_raw = p->raw ? p->n_raw : 0,
+            .pre = p->pre_used, .text = p->text, .free_text = free_text, .stream_text = p->st ? stream : NULL,
+            .phrase = pinfo.best, .phrase_gap = pinfo.gap, .phrase_thr = pinfo.thr, .phrase_n = pinfo.n,
+            .conf_level = cl, .conf = cs, .full = full, .delay_ms = after, .press_s = p->press_us / 1e6};
+        sdlog_utt(&u);
+    }
     api_state("idle");
     snprintf(p->idle, sizeof(p->idle), "hold to talk");  // (the delay is on the serial line; the status line has room for 13 characters)
     oled_status(p->idle);
+    show_prompt(p);
 }
 // Push-to-talk: an utterance is the audio between a press and a release (plus the pre-roll). Streaming models are fed
 // while the button is held, for as long as it is held; the final text comes as soon as the recognizer reaches the
@@ -319,7 +372,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     static char text[4096];
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
-    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk"};
+    ptt_t p = {m, dec, tasr_nemo_stream_new(m, 0, 0, dec), NULL, 0, 0, NULL, 0, text, sizeof(text), "hold to talk", 0};
     p.utt = heap_caps_malloc(sizeof(int16_t) * (p.st && !MIC_FINAL_FULL ? PTT_PRE : PTT_CAP), MALLOC_CAP_SPIRAM);  // pre-roll / recording
     if (p.st && MIC_FINAL_FULL) tasr_nemo_stream_keep(p.st, PTT_CAP);
     oled_start();
@@ -327,6 +380,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     api_start(&(api_info_t){p.st ? "streaming" : "utterance", dec != NULL, true, HAS_BLE});
     printf("ready (%s, push-to-talk on GPIO%d, %.2f s after boot): hold the button while you speak\n",
            p.st ? "streaming" : "utterance", CONFIG_TASR_PTT_GPIO, esp_timer_get_time() / 1e6);
+    show_prompt(&p);
     uint32_t rd = 0;  // samples taken from the ring
     int active = 0, npre = 0, pw = 0;
     led_set(LED_IDLE);
@@ -337,6 +391,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             xQueueReceive(g_ptt, &ev, 0);
             if (ev.down && !active) {  // press: start with the pre-roll, oldest sample first
                 active = 1;
+                p.press_us = ev.t_us;
                 for (int i = 0; i < npre; i++) p.utt[i] = pre[(pw - npre + i + PTT_PRE) % PTT_PRE];
                 p.n_utt = p.pre_used = npre;
                 p.n_raw = 0;
@@ -368,7 +423,7 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
         }
         tasr_seg_vad(&seg, in, blk, n);  // AGC only (the button, not the energy VAD, decides what is speech)
         rd += n;
-        if (api_dump_on() && !p.raw) p.raw = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if ((api_dump_on() || sdlog_on()) && !p.raw) p.raw = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);
         if (p.raw && active && p.n_raw + n <= PTT_CAP) {
             memcpy(p.raw + p.n_raw, in, sizeof(int16_t) * n);
             p.n_raw += n;
