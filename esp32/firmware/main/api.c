@@ -109,6 +109,8 @@ void api_add_sink(api_sink_t sink)
 bool api_talk_held(void) { return s_talk; }
 void api_human_partial(void) { s_pending = 1; }
 bool api_dump_on(void) { return s_dump; }
+static volatile int s_mic = 1;
+int api_mic(void) { return s_mic; }
 
 // JSON string escaping into dst (UTF-8 passes through); returns bytes written, always terminated
 static int esc(char *dst, int max, const char *s)
@@ -330,6 +332,13 @@ void api_handle_line(const char *text)
         (void)ba;
         if (cJSON_IsBool(lv)) { s_level_on = cJSON_IsTrue(lv); reply(id, cmd, true, NULL); }
         else if (cJSON_IsBool(du)) { s_dump = cJSON_IsTrue(du); reply(id, cmd, true, NULL); }
+#ifdef CONFIG_TASR_MIC2
+        else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j, "mic"))) {  // {"cmd":"set","mic":2}: which microphone the recognizer hears
+            const int m = cJSON_GetObjectItemCaseSensitive(j, "mic")->valueint;
+            if (m == 1 || m == 2) { s_mic = m; reply(id, cmd, true, NULL); }
+            else reply(id, cmd, false, "mic is 1 or 2");
+        }
+#endif
 #ifdef CONFIG_IDF_TARGET_ESP32P4
         else if (cJSON_IsNumber(ba) && (ba->valueint == 115200 || ba->valueint == 921600)) {  // the ack goes out at the old speed
             reply(id, cmd, true, NULL);

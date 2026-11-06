@@ -10,7 +10,10 @@ typedef struct {
     int n_audio;
     const int16_t *raw;     // the microphone before gain control (NULL: not kept), n_raw samples
     int n_raw;
-    int pre;                // samples of pre-roll (from before the button went down) at the start of both
+    const int16_t *raw2;    // the other microphone before gain control (CONFIG_TASR_MIC2; NULL: none), n_raw2 samples, same timing
+    int n_raw2;
+    int mic;                // the microphone the recognizer heard (1 built in, 2 the second)
+    int pre;                // samples of pre-roll (from before the button went down) at the start of each
     const char *text;       // what the screen showed
     const char *free_text;  // the free decoding's text (differs from text when a list phrase replaced it)
     const char *stream_text;  // the live (streaming) text at the end of the utterance; NULL if none

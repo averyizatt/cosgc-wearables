@@ -18,5 +18,10 @@
 #define MIC_FINAL_FULL 0
 #endif
 // PSRAM for the ring and, when used, the recording buffer
+#ifdef CONFIG_TASR_MIC2
+#define MIC_RINGS 2  // the second microphone has a ring of its own
+#else
+#define MIC_RINGS 1
+#endif
 #define MIC_PSRAM(streaming)                                                                                             \
-    ((size_t)MIC_RING_SAMPLES * 2 + ((CONFIG_TASR_PTT_GPIO >= 0 && (streaming) && !MIC_FINAL_FULL) ? 0 : (size_t)MIC_UTT_SAMPLES * 2))
+    ((size_t)MIC_RING_SAMPLES * 2 * MIC_RINGS + ((CONFIG_TASR_PTT_GPIO >= 0 && (streaming) && !MIC_FINAL_FULL) ? 0 : (size_t)MIC_UTT_SAMPLES * 2))

@@ -52,6 +52,8 @@ CONFIG_TASR_SEG_HANG_MS=800
 CONFIG_TASR_FINAL_FULL=y
 # microSD session log (sdlog.c): the board's slot on GPIO 43/44/39-42, pins powered from on-chip LDO 4; long file names for log.jsonl
 CONFIG_TASR_SDLOG=y
+# second microphone (INMP441 on I2S1): SCK 17, WS 16, SD 15, L/R to GND; recorded alongside the built-in one (docs/P4.md)
+CONFIG_TASR_MIC2=y
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_TASR_PTT_GPIO=21
 CONFIG_TASR_LED_GPIO=-1

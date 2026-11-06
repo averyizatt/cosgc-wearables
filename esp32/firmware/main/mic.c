@@ -108,6 +108,25 @@ __attribute__((unused)) static const char *phrase_pick(phrase_info_t *info)
 #endif
 static StreamBufferHandle_t g_ring;
 static i2s_chan_handle_t g_rx;
+#ifdef CONFIG_TASR_MIC2
+// The second microphone (INMP441, I2S1): read in step with the first; the one the recognizer does not hear goes to g_ring2, which
+// the recognizer drains sample for sample alongside g_ring, so both microphones' audio of each utterance reaches the SD log.
+static StreamBufferHandle_t g_ring2;
+static i2s_chan_handle_t g_rx2;
+#endif
+// 24-bit left-justified samples -> 16-bit with DC removal; returns the block's energy
+static float to_pcm(const int32_t *raw, int16_t *pcm, int n, float *dc)
+{
+    float energy = 0.f;
+    for (int i = 0; i < n; i++) {
+        float x = (float)(raw[i] >> 8) / 256.0f;
+        *dc += 0.001f * (x - *dc);
+        float y = x - *dc;
+        energy += y * y;
+        pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
+    }
+    return energy;
+}
 
 #if CONFIG_TASR_PTT_GPIO >= 0
 // Push-to-talk: the capture task (real time) debounces the button and queues each press / release with the index of
@@ -127,6 +146,11 @@ static void capture_task(void *arg)
     static int32_t raw[320];
     static int16_t pcm[320];
     float dc = 0.f;
+#ifdef CONFIG_TASR_MIC2
+    static int32_t raw2[320];
+    static int16_t pcm2[320];
+    float dc2 = 0.f;
+#endif
     int dropped = 0;  // samples lost in the current overflow episode
 #if CONFIG_TASR_PTT_GPIO >= 0
     uint32_t queued = 0;           // samples queued so far
@@ -137,14 +161,22 @@ static void capture_task(void *arg)
         size_t got = 0;
         i2s_channel_read(g_rx, raw, sizeof(raw), &got, portMAX_DELAY);
         int n = got / 4;
-        float energy = 0.f;
-        for (int i = 0; i < n; i++) {  // 24-bit left-justified -> 16-bit with DC removal
-            float x = (float)(raw[i] >> 8) / 256.0f;
-            dc += 0.001f * (x - dc);
-            float y = x - dc;
-            energy += y * y;
-            pcm[i] = (int16_t)(y > 32767.f ? 32767.f : (y < -32768.f ? -32768.f : y));
+        float energy = to_pcm(raw, pcm, n, &dc);
+#ifdef CONFIG_TASR_MIC2
+        {   // the same number of samples from the second microphone (both ports run from the same clock source at 16 kHz)
+            size_t got2 = 0;
+            i2s_channel_read(g_rx2, raw2, n * 4, &got2, pdMS_TO_TICKS(40));
+            const int n2 = (int)(got2 / 4);
+            if (n2 < n) memset(raw2 + n2, 0, (n - n2) * 4);
+            const float e2 = to_pcm(raw2, pcm2, n, &dc2);
+            if (api_mic() == 2) {  // the recognizer hears the second microphone: swap, so pcm/energy are the heard one
+                int16_t t[320];
+                memcpy(t, pcm, n * 2); memcpy(pcm, pcm2, n * 2); memcpy(pcm2, t, n * 2);
+                energy = e2;
+            }
+            xStreamBufferSend(g_ring2, pcm2, n * 2, 0);  // the other microphone; dropped with the main ring if the recognizer is far behind
         }
+#endif
         if (n) {
             const float db = 10.f * log10f(energy / n / (32768.f * 32768.f) + 1e-12f);  // dBFS of this 20 ms block
             oled_level(db);
@@ -221,6 +253,29 @@ static void mic_start(void)
     uint8_t *storage = heap_caps_malloc(RING_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM);
     static StaticStreamBuffer_t sb;
     g_ring = xStreamBufferCreateStatic(RING_SAMPLES * 2, 2, storage, &sb);
+#ifdef CONFIG_TASR_MIC2
+    {
+        i2s_chan_config_t c2 = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+        c2.dma_desc_num = CONFIG_TASR_I2S_DMA_DESC;
+        c2.dma_frame_num = 320;
+        ESP_ERROR_CHECK(i2s_new_channel(&c2, NULL, &g_rx2));
+        i2s_std_config_t s2 = {
+            .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
+            .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+            .gpio_cfg = {.mclk = I2S_GPIO_UNUSED, .bclk = CONFIG_TASR_MIC2_SCK, .ws = CONFIG_TASR_MIC2_WS,
+                         .dout = I2S_GPIO_UNUSED, .din = CONFIG_TASR_MIC2_SD},
+        };
+        s2.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;  // INMP441 with L/R tied to GND
+        ESP_ERROR_CHECK(i2s_channel_init_std_mode(g_rx2, &s2));
+        gpio_pulldown_en(CONFIG_TASR_MIC2_SD);  // the INMP441 leaves SD floating in the other half-frame (its datasheet asks for a pull-down); unwired: silence
+        ESP_ERROR_CHECK(i2s_channel_enable(g_rx2));
+        uint8_t *st2 = heap_caps_malloc(RING_SAMPLES * 2 + 1, MALLOC_CAP_SPIRAM);
+        static StaticStreamBuffer_t sb2;
+        g_ring2 = xStreamBufferCreateStatic(RING_SAMPLES * 2, 2, st2, &sb2);
+        ESP_LOGI(TAG, "second microphone (INMP441) on SCK %d WS %d SD %d; the recognizer hears microphone %d",
+                 CONFIG_TASR_MIC2_SCK, CONFIG_TASR_MIC2_WS, CONFIG_TASR_MIC2_SD, api_mic());
+    }
+#endif
 #if CONFIG_TASR_PTT_GPIO >= 0
     const gpio_config_t io = {.pin_bit_mask = 1ULL << CONFIG_TASR_PTT_GPIO, .mode = GPIO_MODE_INPUT,
                               .pull_up_en = GPIO_PULLUP_ENABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -256,6 +311,8 @@ typedef struct {
     int text_len;
     char idle[32];
     int64_t press_us;  // when the button went down (for the SD log)
+    int16_t *raw2;     // the other microphone (CONFIG_TASR_MIC2), laid out like raw; only with the SD log
+    int n_raw2;
 } ptt_t;
 // prompted recording (sdlog.c): the next prompt on the screen and its number in the status line
 static void show_prompt(ptt_t *p)
@@ -352,7 +409,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
         const sdlog_utt_t u = {
             // the recording buffer holds the first 20 s (and only the pre-roll for a streaming model without the full pass)
             .audio = p->utt, .n_audio = (!p->st || MIC_FINAL_FULL) ? (p->n_utt < PTT_CAP ? p->n_utt : PTT_CAP) : 0,
-            .raw = p->raw, .n_raw = p->raw ? p->n_raw : 0,
+            .raw = p->raw, .n_raw = p->raw ? p->n_raw : 0, .raw2 = p->raw2, .n_raw2 = p->raw2 ? p->n_raw2 : 0, .mic = api_mic(),
             .pre = p->pre_used, .text = p->text, .free_text = free_text, .stream_text = p->st ? stream : NULL,
             .phrase = pinfo.best, .phrase_gap = pinfo.gap, .phrase_thr = pinfo.thr, .phrase_n = pinfo.n,
             .conf_level = cl, .conf = cs, .full = full, .delay_ms = after, .press_s = p->press_us / 1e6};
@@ -370,7 +427,7 @@ static void ptt_end(ptt_t *p, int64_t released_us)
 // (an utterance longer than the recording buffer keeps the streaming text).
 static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
 {
-    static int16_t in[320], blk[320], pre[PTT_PRE];
+    static int16_t in[320], in2[320], blk[320], pre[PTT_PRE];
     static char text[4096];
     static tasr_seg_t seg;  // only its AGC
     tasr_seg_init(&seg, NULL, 0);
@@ -388,6 +445,14 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
     led_set(LED_IDLE);
     for (;;) {
         const int n = (int)(xStreamBufferReceive(g_ring, in, sizeof(in), portMAX_DELAY) / 2);
+#ifdef CONFIG_TASR_MIC2
+        {   // the other microphone's samples for the same stretch (written in the same capture step)
+            const int n2 = (int)(xStreamBufferReceive(g_ring2, in2, n * 2, pdMS_TO_TICKS(5)) / 2);
+            if (n2 < n) memset(in2 + n2, 0, (n - n2) * 2);
+        }
+#else
+        (void)in2;
+#endif
         ptt_ev_t ev;
         while (xQueuePeek(g_ptt, &ev, 0) == pdTRUE && ev.at <= rd) {  // button events up to this sample
             xQueueReceive(g_ptt, &ev, 0);
@@ -400,6 +465,10 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
                 if (p.raw) {
                     for (int i = 0; i < npre; i++) p.raw[i] = p.raw[PTT_CAP + (pw - npre + i + PTT_PRE) % PTT_PRE];
                     p.n_raw = npre;
+                }
+                if (p.raw2) {
+                    for (int i = 0; i < npre; i++) p.raw2[i] = p.raw2[PTT_CAP + (pw - npre + i + PTT_PRE) % PTT_PRE];
+                    p.n_raw2 = npre;
                 }
                 if (p.st) {
                     tasr_nemo_stream_reset(p.st);
@@ -430,6 +499,14 @@ static void run_mic_ptt(const tasr_nemo_t *m, struct tasr_decoder *dec)
             memcpy(p.raw + p.n_raw, in, sizeof(int16_t) * n);
             p.n_raw += n;
         }
+#ifdef CONFIG_TASR_MIC2
+        if (sdlog_on() && !p.raw2) p.raw2 = heap_caps_calloc(PTT_CAP + PTT_PRE, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if (p.raw2 && active && p.n_raw2 + n <= PTT_CAP) {
+            memcpy(p.raw2 + p.n_raw2, in2, sizeof(int16_t) * n);
+            p.n_raw2 += n;
+        }
+        if (p.raw2 && !active) for (int i = 0; i < n; i++) p.raw2[PTT_CAP + (pw + i) % PTT_PRE] = in2[i];
+#endif
         if (!active) {  // idle: keep the last 0.3 s as pre-roll
             if (p.raw) for (int i = 0; i < n; i++) p.raw[PTT_CAP + (pw + i) % PTT_PRE] = in[i];
             for (int i = 0; i < n; i++) pre[(pw + i) % PTT_PRE] = blk[i];

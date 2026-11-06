@@ -4,6 +4,8 @@
 
     python sd_session.py score E:/s0003 [E:/s0004 ...] [-v]      WER of live and final text against the prompts, phrase picks, levels
     python sd_session.py manifest E:/s0003 out.jsonl            a manifest for esp32/host/eval_cli.py (rescore with another model)
+    python sd_session.py manifest E:/s0003 b.jsonl --which raw_b   the other microphone's recordings (two-microphone builds): score
+                                                                both microphones on the same speech (--which raw for the heard one)
     python sd_session.py models models/*.tnm ~/lmtest/*.tnm     each model's fingerprint, to match session.json's model_fnv1a
     python sd_session.py check prompts.txt                      count prompts, flag lines the screen cannot show
 
@@ -91,10 +93,11 @@ def manifest(a):
     n = 0
     with open(a.out, "w", encoding="utf-8", newline="\n") as f:
         for u in log:
-            if "wav" not in u:
+            if a.which not in u:
                 continue
-            f.write(json.dumps({"wav": os.path.join(root, u["wav"]).replace("\\", "/"), "text": norm(u.get("prompt", "")),
-                                "speaker": f"s{sess.get('session', 0):04d}", "utt": u["utt"]}) + "\n")
+            f.write(json.dumps({"wav": os.path.join(root, u[a.which]).replace("\\", "/"), "text": norm(u.get("prompt", "")),
+                                "speaker": f"s{sess.get('session', 0):04d}", "utt": u["utt"],
+                                "mic": u.get("mic", 1) if a.which != "raw_b" else 3 - u.get("mic", 1)}) + "\n")
             n += 1
     print(f"{n} utterances -> {a.out}" + ("" if any("prompt" in u for u in log) else " (no prompts: text is empty)"))
 
@@ -133,6 +136,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("score"); s.add_argument("dirs", nargs="+"); s.add_argument("-v", action="store_true")
     m = sub.add_parser("manifest"); m.add_argument("dir"); m.add_argument("out")
+    m.add_argument("--which", default="wav", choices=["wav", "raw", "raw_b"],
+                   help="wav: what the model heard; raw: that microphone before gain control; raw_b: the other microphone (two-microphone builds)")
     o = sub.add_parser("models"); o.add_argument("tnm", nargs="+")
     c = sub.add_parser("check"); c.add_argument("prompts")
     a = ap.parse_args()

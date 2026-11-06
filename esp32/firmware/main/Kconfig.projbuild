@@ -108,6 +108,25 @@ menu "tinyasr"
             Streaming models only. When speech ends (button released, or the pause), the whole utterance runs through the
             encoder with full context, which is much more accurate (docs/EXPERIMENTS.md, E12) but takes about 0.64 times
             the utterance's length on two ESP32-P4 cores. Utterances beyond the 20 s recording buffer keep the streaming text.
+    config TASR_MIC2
+        bool "A second microphone (INMP441 on its own I2S port), recorded alongside the first"
+        default n
+        depends on TASR_MODE_MIC
+        help
+            Both microphones run all the time; the recognizer hears one ({"cmd":"set","mic":1|2}, the first by default) and the
+            SD log keeps both, so the same speech can be scored through each. Without the module wired, its channel is silence.
+    config TASR_MIC2_SCK
+        int "Second microphone: SCK (bit clock) GPIO"
+        depends on TASR_MIC2
+        default 17
+    config TASR_MIC2_WS
+        int "Second microphone: WS (word select) GPIO"
+        depends on TASR_MIC2
+        default 16
+    config TASR_MIC2_SD
+        int "Second microphone: SD (data) GPIO"
+        depends on TASR_MIC2
+        default 15
     config TASR_SDLOG
         bool "Microphone mode with the button: log every utterance to the microSD card"
         default n

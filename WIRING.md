@@ -81,3 +81,18 @@ Runs on a real board; the screen and button have not been tried yet, and nobody 
 codec, I2C SDA 7 / SCL 8, I2S MCLK 13 / SCLK 12 / LRCK 10 / data 11). Build with `pio run -e oido_p4_2c` and flash with `python esp32/tools/flash_p4.py COM3 --env oido_p4_2c`.
 On the 40-pin header you can add an I2C OLED (SDA 7, SCL 8, address 0x3C, shared with the codec; the firmware looks for it by itself) and a push-to-talk button (to GND, then set
 `CONFIG_TASR_PTT_GPIO` in `esp32/firmware/sdkconfig.p4`). Full notes and which pins to avoid: [docs/P4.md](docs/P4.md).
+
+**Second microphone (INMP441), optional.** The firmware records it alongside the built-in microphone (both go to the SD card,
+`uNNNNb.wav` is the one the recognizer did not hear) and the recognizer hears the built-in one unless a client sends
+`{"cmd":"set","mic":2}`. All on the left header row, next to a GND pin:
+
+| INMP441 pin | P4-Pico pin |
+|---|---|
+| VDD | 3V3 (right row, 5th pin from the USB end); never 5 V |
+| GND | GND (left row, between GPIO15 and GPIO14) |
+| L/R | GND (left channel; do not leave it floating) |
+| SCK | GPIO17 |
+| WS | GPIO16 |
+| SD | GPIO15 (the firmware enables a pull-down: unwired reads as silence) |
+
+Keep the three signal wires short. Pins are `CONFIG_TASR_MIC2_SCK/WS/SD` in `esp32/firmware/sdkconfig.p4`.

@@ -8,6 +8,8 @@
 //   s0001/log.jsonl        one line per utterance (fields: sdlog_utt_t, plus levels and file names)
 //   s0001/u0001.wav        what the model heard (after gain control), 16 kHz mono 16-bit
 //   s0001/u0001r.wav       the microphone before gain control (for levels and noise)
+//   s0001/u0001b.wav       with a second microphone (CONFIG_TASR_MIC2): the one the recognizer did not hear, same timing ("mic" in
+//                          the log line says which one it heard)
 // The log is appended and synced after every utterance, so pulling the power loses at most the utterance being written.
 #include "sdlog.h"
 #include "sdkconfig.h"
@@ -47,7 +49,7 @@ static int s_np, s_pi;             // prompts, the current one (0-based)
 typedef struct {
     cJSON *j;          // the log line without levels and file names
     int16_t *pcm;      // audio, then raw, in one PSRAM block (NULL: copy failed, the line is still written)
-    int n_audio, n_raw, pre, utt;
+    int n_audio, n_raw, n_raw2, pre, utt;  // pcm holds audio, raw, then raw2 (the other microphone)
     int64_t t0;
     char dir[24];      // the session folder it belongs to (a tap can open the next session while this one is written)
 } job_t;
@@ -276,6 +278,14 @@ static void writer_task(void *arg)
         float speech = -120.f, noise = -120.f, peak = -120.f;
         if (rawp && jb.n_raw > 0) levels(rawp, jb.n_raw, jb.pre, &speech, &noise, &peak);
         else if (audio) levels(audio, jb.n_audio, jb.pre, &speech, &noise, &peak);
+        // the other microphone (CONFIG_TASR_MIC2): uNNNNb.wav and its own levels
+        const int16_t *raw2 = jb.pcm && jb.n_raw2 > 0 ? jb.pcm + jb.n_audio + jb.n_raw : NULL;
+        char bname[16];
+        snprintf(bname, sizeof(bname), "u%04db.wav", jb.utt);
+        snprintf(raw, sizeof(raw), "%s/%s", jb.dir, bname);
+        const bool ok_b = raw2 && write_wav(raw, raw2, jb.n_raw2);
+        float speech2 = -120.f, noise2 = -120.f, peak2 = -120.f;
+        if (raw2) levels(raw2, jb.n_raw2, jb.pre, &speech2, &noise2, &peak2);
         heap_caps_free(jb.pcm);
         cJSON *j = jb.j;
         cJSON_AddNumberToObject(j, "speech_db", roundf(speech * 10) / 10);
@@ -283,6 +293,12 @@ static void writer_task(void *arg)
         cJSON_AddNumberToObject(j, "peak_db", roundf(peak * 10) / 10);
         if (ok_wav) cJSON_AddStringToObject(j, "wav", name);
         if (ok_raw) cJSON_AddStringToObject(j, "raw", rname);
+        if (raw2) {
+            cJSON_AddNumberToObject(j, "speech_db_b", roundf(speech2 * 10) / 10);
+            cJSON_AddNumberToObject(j, "noise_db_b", roundf(noise2 * 10) / 10);
+            cJSON_AddNumberToObject(j, "peak_db_b", roundf(peak2 * 10) / 10);
+            if (ok_b) cJSON_AddStringToObject(j, "raw_b", bname);  // the microphone the recognizer did not hear
+        }
         char *line = cJSON_PrintUnformatted(j);
         cJSON_Delete(j);
         char path[48];
@@ -304,12 +320,13 @@ void sdlog_utt(const sdlog_utt_t *u)
 {
     if (!s_on) return;
     job_t jb = {.utt = ++s_utt, .t0 = esp_timer_get_time(), .pre = u->pre, .n_audio = u->n_audio,
-                .n_raw = u->raw ? u->n_raw : 0};
+                .n_raw = u->raw ? u->n_raw : 0, .n_raw2 = u->raw2 ? u->n_raw2 : 0};
     snprintf(jb.dir, sizeof(jb.dir), "%s", s_dir);
-    jb.pcm = heap_caps_malloc(sizeof(int16_t) * (size_t)(jb.n_audio + jb.n_raw + 1), MALLOC_CAP_SPIRAM);
+    jb.pcm = heap_caps_malloc(sizeof(int16_t) * (size_t)(jb.n_audio + jb.n_raw + jb.n_raw2 + 1), MALLOC_CAP_SPIRAM);
     if (jb.pcm) {
         memcpy(jb.pcm, u->audio, sizeof(int16_t) * jb.n_audio);
         if (jb.n_raw) memcpy(jb.pcm + jb.n_audio, u->raw, sizeof(int16_t) * jb.n_raw);
+        if (jb.n_raw2) memcpy(jb.pcm + jb.n_audio + jb.n_raw, u->raw2, sizeof(int16_t) * jb.n_raw2);
     } else {
         ESP_LOGW(TAG, "no PSRAM to copy utterance %d: only its log line is written", jb.utt);
     }
@@ -334,6 +351,7 @@ void sdlog_utt(const sdlog_utt_t *u)
     cJSON_AddNumberToObject(j, "conf_level", u->conf_level);
     cJSON_AddNumberToObject(j, "conf", roundf(u->conf * 1000) / 1000);
     cJSON_AddBoolToObject(j, "full", u->full);
+    cJSON_AddNumberToObject(j, "mic", u->mic ? u->mic : 1);
     cJSON_AddNumberToObject(j, "audio_s", roundf(u->n_audio / 16.f) / 1000);
     cJSON_AddNumberToObject(j, "pre_s", roundf(u->pre / 16.f) / 1000);
     cJSON_AddNumberToObject(j, "delay_ms", round(u->delay_ms));
