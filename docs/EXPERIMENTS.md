@@ -1690,6 +1690,8 @@ Result:     not run yet.
 - 2026-11-07 01:00: both fold teachers failed within minutes, CUDA out of memory in the first steps (other programs held GPU memory;
   teacher110 itself needed 3.8 GB). Logs kept as `teacher110_fold{B,C}_oom1.log`. Requeued for 01:00 on 2026-11-08; the queue now
   also waits for at least 9 GB of free GPU memory.
+- 2026-11-07 10:25: started at once at the user's request instead (fold B teacher trained at 99 % GPU next to a game). Stopped at
+  about 10:45 at the user's request (PC needed); `teacher110_foldB\ckpt.pt` was saved. Nothing is queued.
 
 ### Seeds (queued 2026-11-03)
 
