@@ -21,6 +21,8 @@ size_t tasr_nemo_place_weights(tasr_nemo_t *m, size_t budget);
 // for greedy. logit_sink (optional): raw logits [frames][1025] (blank last). Returns encoder frames.
 int tasr_nemo_transcribe(const tasr_nemo_t *m, const int16_t *pcm, int n, struct tasr_decoder *dec, char *text,
                          int maxlen, float *logit_sink, int max_frames, int *n_frames);
+// The full pass's beam decoder on stored logits (from logit_sink, nf frames): the same text as a full pass with dec. Host tools.
+int tasr_nemo_decode_logits(const tasr_nemo_t *m, const float *logits, int nf, struct tasr_decoder *dec, char *text, int maxlen);
 
 // Streaming (models exported from train_nemo_stream.py --stream): feed audio as it arrives; the encoder runs every
 // `chunk` encoder frames (40 ms each) with `left` frames of attention context (0 = the model's defaults, 16 and 128).

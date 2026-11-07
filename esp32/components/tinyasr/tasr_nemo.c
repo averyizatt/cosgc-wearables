@@ -1359,6 +1359,38 @@ int tasr_nemo_transcribe_from(const tasr_nemo_t *m, const int16_t *pcm, int n, t
     return T;
 }
 
+// The beam decoder of a full pass, run again on logits the pass stored (logit_sink): the same arithmetic, so the text equals a
+// full pass with this decoder. Lets a host tool try many LM settings on one encoder run (esp32/host/tasr_cli --grid).
+int tasr_nemo_decode_logits(const tasr_nemo_t *m, const float *logits, int nf, tasr_decoder_t *dec, char *text, int maxlen)
+{
+    const int V1 = m->V + 1;
+    float *lp = (float *)malloc(sizeof(float) * V1);
+    int len = 0;
+    if (!lp || !maxlen) { free(lp); return 0; }
+    text[0] = 0;
+    tasr_decoder_reset(dec);
+    for (int t = 0; t < nf; t++) {
+        const float *l = logits + (size_t)t * V1;
+        float bv = l[0];
+        for (int v = 1; v < V1; v++) if (l[v] > bv) bv = l[v];
+        float z = 0.f;
+        for (int v = 0; v < V1; v++) z += expf(l[v] - bv);
+        const float lz = bv + logf(z);
+        lp[0] = l[m->V] - lz;
+        for (int v = 0; v < m->V; v++) lp[v + 1] = l[v] - lz;
+        tasr_decoder_step(dec, lp);
+    }
+    int toks[2048];
+    const int nt = tasr_decoder_best(dec, toks, 2048);
+    for (int i = 0; i < nt; i++) {
+        const int nl = m->tok_len[toks[i]];
+        if (len + nl + 1 < maxlen) { memcpy(text + len, m->tok[toks[i]], nl); len += nl; text[len] = 0; }
+    }
+    if (text[0] == ' ') memmove(text, text + 1, strlen(text));
+    free(lp);
+    return len;
+}
+
 // ================================================================== streaming
 // For models trained with train_nemo_stream.py --stream. Audio is fed as it arrives; every C encoder frames (40 ms
 // each) run through all layers with exactly the training masks:

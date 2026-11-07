@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--phrases", default="", help="phrase mode: score this list (make_phrases.py output) on every clip, full context only")
     ap.add_argument("--chunk", type=int, default=0, help="with --stream: encoder frames per chunk (0: stored in the model)")
     ap.add_argument("--left", type=int, default=0, help="with --stream: left context in frames (0: stored in the model)")
+    ap.add_argument("--grid", default="", help="with --lm, full context: 'w:b,w:b,...' LM settings decoded from the same encoder run; "
+                    "each writes <out>_w<w>_b<b>.json (and _utts.jsonl) as if run with --lm_weight w --token_bonus b")
     a = ap.parse_args()
     items = [json.loads(l) for l in open(a.manifest, encoding="utf-8") if l.strip()]
     if a.limit:
@@ -74,6 +76,10 @@ def main():
         cli += ["--lm_weight", str(a.lm_weight)] if a.lm_weight is not None else []
         cli += ["--token_bonus", str(a.token_bonus)] if a.token_bonus is not None else []
     cli += ["--phrases", a.phrases] if a.phrases else []
+    if a.grid:
+        if not a.lm or a.stream:
+            sys.exit("--grid needs --lm and a full pass")
+        cli += ["--grid", a.grid]
     batches = [items[i::a.jobs] for i in range(a.jobs)]
 
     def run(batch):
@@ -82,12 +88,25 @@ def main():
         for f in (l.split("\t") for l in p.stderr.splitlines() if l.startswith("PHR\t")):
             if len(f) == 5 and f[1] in conf:
                 conf[f[1]] += [float(f[2]), int(f[3]), [float(v) for v in f[4].split()]]
-        return dict(l.split("\t", 1) if "\t" in l else (l, "") for l in p.stdout.splitlines()), conf
+        g = collections.defaultdict(dict)
+        for f in (l.split("\t", 3) for l in p.stderr.splitlines() if l.startswith("GRID\t")):
+            if len(f) >= 3:
+                g[int(f[1])][f[2]] = f[3] if len(f) == 4 else ""
+        return dict(l.split("\t", 1) if "\t" in l else (l, "") for l in p.stdout.splitlines()), conf, g
 
-    hyp, conf = {}, {}
+    hyp, conf, ghyp = {}, {}, collections.defaultdict(dict)
     with ThreadPoolExecutor(a.jobs) as ex:
-        for h, c in ex.map(run, batches):
+        for h, c, g in ex.map(run, batches):
             hyp.update(h); conf.update(c)
+            for k, v in g.items():
+                ghyp[k].update(v)
+    write(a, items, hyp, conf, a.out, a.lm_weight, a.token_bonus)
+    for k, x in enumerate(x for x in a.grid.split(",") if x):
+        w, b = map(float, x.split(":"))
+        write(a, items, ghyp[k], {}, f"{os.path.splitext(a.out)[0]}_w{w:g}_b{b:g}.json", w, b, quiet=True)
+
+
+def write(a, items, hyp, conf, out, lw, tb, quiet=False):
     acc = collections.defaultdict(lambda: [0, 0, 0])  # edits, ref words, clips
     utts = []
     for it in items:
@@ -102,14 +121,17 @@ def main():
             v = acc[key]; v[0] += e; v[1] += len(r); v[2] += 1
     res = {"model": a.model, "manifest": a.manifest, "clips": len(items), "missing": sum(it["_wav"] not in hyp for it in items),
            "mode": "stream" if a.stream else "full",
-           "decoding": f"beam {a.beam} + LM {os.path.basename(a.lm)} (weight {a.lm_weight}, bonus {a.token_bonus}; None = engine default)" if a.lm else "greedy"}
+           "decoding": f"beam {a.beam} + LM {os.path.basename(a.lm)} (weight {lw}, bonus {tb}; None = engine default)" if a.lm else "greedy"}
     for key, (e, n, c) in sorted(acc.items()):
         res[key] = {"wer": round(100 * e / max(1, n), 2), "clips": c}
-    json.dump(res, open(a.out, "w"), indent=1)
-    with open(os.path.splitext(a.out)[0] + "_utts.jsonl", "w") as f:
+    json.dump(res, open(out, "w"), indent=1)
+    with open(os.path.splitext(out)[0] + "_utts.jsonl", "w") as f:
         for u in utts:
             f.write(json.dumps(u) + "\n")
-    print(json.dumps({k: v for k, v in res.items() if not k.startswith("by_mic")}, indent=1))
+    if quiet:
+        print(f"weight {lw:g} bonus {tb:g}: WER {res['all']['wer']}, missing {res['missing']} -> {out}")
+    else:
+        print(json.dumps({k: v for k, v in res.items() if not k.startswith("by_mic")}, indent=1))
 
 
 if __name__ == "__main__":

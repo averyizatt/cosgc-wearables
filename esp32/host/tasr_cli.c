@@ -67,7 +67,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s model.{tasr,tnm} [--lm lm.tlm] [--beam 4] [--lm_weight w] [--token_bonus b] file.wav ...\n", argv[0]);
         return 1;
     }
-    const char *lm_path = NULL, *phr_path = NULL;
+    const char *lm_path = NULL, *phr_path = NULL, *grid = NULL;
     int chunk = 32, left = 4, first = 2, beam = 4, stream = 0, nchunk = 0, nleft = 0, reuse = 0;
     float lw = -1.f, tb = -1.f;
     for (int i = 2; i < argc; i++) {
@@ -82,6 +82,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--beam") && i + 1 < argc) { beam = atoi(argv[++i]); first = i + 1; }
         else if (!strcmp(argv[i], "--lm_weight") && i + 1 < argc) { lw = (float)atof(argv[++i]); first = i + 1; }
         else if (!strcmp(argv[i], "--token_bonus") && i + 1 < argc) { tb = (float)atof(argv[++i]); first = i + 1; }
+        else if (!strcmp(argv[i], "--grid") && i + 1 < argc) { grid = argv[++i]; first = i + 1; }  // "w:b,w:b,...": full pass, LM
     }
     size_t msz;
     uint8_t *mb = read_file(argv[1], &msz);
@@ -117,8 +118,27 @@ int main(int argc, char **argv)
         tasr_nemo_set_phrases(phr);
         fprintf(stderr, "%d phrases\n", tasr_phrases_count(phr));
     }
+    // --grid: each listed LM weight and token bonus decodes the same full pass's logits again (one encoder run per clip); every
+    // setting's text goes to stderr as "GRID\t<k>\t<file>\t<text>", k counting from 0 in the order given
+    enum { GMAX = 64, GFR = 4000 };
+    tasr_decoder_t *gdec[GMAX];
+    int ng = 0;
+    float *glog = NULL;
+    if (grid) {
+        if (!nemo || !lm || stream) { fprintf(stderr, "--grid needs a .tnm model, --lm and a full pass\n"); return 1; }
+        for (const char *p = grid; *p && ng < GMAX;) {
+            char *e;
+            const float w = strtof(p, &e);
+            if (*e != ':') { fprintf(stderr, "--grid: expected w:b at %s\n", p); return 1; }
+            const float b = strtof(e + 1, &e);
+            gdec[ng++] = tasr_decoder_create(lm, 1025, beam, 6, w, b);
+            p = *e == ',' ? e + 1 : e;
+        }
+        glog = (float *)malloc(sizeof(float) * GFR * 1025);
+        if (!glog) { fprintf(stderr, "--grid: no memory\n"); return 1; }
+    }
     static char text[16384];
-    tasr_nemo_stream_t *ns_ = nemo && stream ? tasr_nemo_stream_new(nm, nchunk, nleft, dec) : NULL;
+    tasr_nemo_stream_t *ns_ =nemo && stream ? tasr_nemo_stream_new(nm, nchunk, nleft, dec) : NULL;
     for (int i = first; i < argc; i++) {
         int ns = 0;
         int16_t *pcm = read_wav(argv[i], &ns);
@@ -158,7 +178,14 @@ int main(int argc, char **argv)
             for (int j = 0; j < ns; j += 320) tasr_nemo_stream_feed(ns_, pcm + j, ns - j < 320 ? ns - j : 320);
             tasr_nemo_stream_finish(ns_, text, sizeof(text));
         } else if (nemo) {
-            tasr_nemo_transcribe(nm, pcm, ns, dec, text, sizeof(text), NULL, 0, NULL);
+            int nf = 0;
+            tasr_nemo_transcribe(nm, pcm, ns, dec, text, sizeof(text), glog, glog ? GFR : 0, &nf);
+            if (glog && nf > GFR) fprintf(stderr, "--grid: %s has %d frames, more than %d: not redecoded\n", argv[i], nf, GFR);
+            else for (int k = 0; k < ng; k++) {
+                static char gt[16384];
+                tasr_nemo_decode_logits(nm, glog, nf, gdec[k], gt, sizeof(gt));
+                fprintf(stderr, "GRID\t%d\t%s\t%s\n", k, argv[i], gt);
+            }
         } else {
             tasr_stream_reset(s);
             for (int j = 0; j < ns; j += 320) tasr_stream_feed(s, pcm + j, ns - j < 320 ? ns - j : 320);

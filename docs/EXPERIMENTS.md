@@ -1624,6 +1624,35 @@ Measure:    big13 against big7, paired: TORGO test (engine + LM, float), LibriSp
             score is also computed, but it includes 20 speakers big13 trained on: not a result.
 Result:     not run yet.
 
+### E25. LM weight and token bonus tuned on held-out training speakers (started 2026-11-06)
+
+Question:   Finding 51 says the teacher changed how much the LM helps, so the LM settings fitted to big2–big7 (0.30 / 0.50) may not fit
+            big12. E13 chose those settings on TORGO test itself. What do weight and bonus come to when they are tuned on speakers
+            the model never heard and that are not TORGO test, for big7's recipe and for big12's?
+Dev set:    the E19 folds. Fold B's models are scored on F04, M04, FC01, MC01 (3796 clips) and fold C's on M03, F01, FC02, MC02
+            (4356 clips); no fold model trained on its own dev speakers. TORGO test (F03, M05, FC03, MC04) is not touched until the
+            setting is fixed.
+Models:     big7 recipe: foldB_big7, foldC_big7 (E19), exported int8 (max/121).
+            big12 recipe: foldB_big12, foldC_big12, `train/runs/foldkd.cmd`. teacher110 trained on the official split, which
+            includes the folds' dev speakers, so each fold also trains its own teacher (teacher110_foldB/C, teacher.cmd's settings
+            on the fold's training lists), measures its offset against the fold's big7, then trains big12's recipe. Queued on the
+            PC for 01:00 on 2026-11-07 (`G:\cosgc\foldkdq.cmd`, B then C, about 7 h).
+            Leak: the mel-level simulation was calibrated on fold A's training speakers (E19's caveat), the same for both recipes.
+Engine:     host engine, int8, full context (the final text), beam 4, `models/nemo_lm.tlm`. New: `eval_cli.py --grid` and
+            `tasr_cli --grid` run the encoder once per clip and decode its logits again for each setting
+            (`tasr_nemo_decode_logits`, the full pass's arithmetic). Checked: on 30 TORGO test clips and big7_q121, settings
+            0.3/0.5, 0.6/1, 0/0 and 1.2/2 give text identical to separate runs with `--lm_weight --token_bonus`, and the default
+            output is identical to the previous binary.
+Grid:       weight 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8 × bonus 0, 0.5, 1, 1.5, 2, and 0 / 0 (beam without LM): 36 settings.
+Rule:       fixed before any dev result.
+            1. Per recipe, the setting with the lowest WER over all dev clips of both folds (corpus-level, 8152 clips) is chosen.
+               If 0.30 / 0.50 is within 0.10 points of it, 0.30 / 0.50 stays.
+            2. big7 and big12 are then scored once on TORGO test with their recipe's setting (final, engine + LM), paired.
+            3. big12 replaces big7 only if its final WER is lower with the 95 % interval below 0, and LibriSpeech (float) is
+               not worse by more than 0.3. Not before the club's E23 sessions are back: they run big7, and a model change
+               part-way would split them.
+Result:     not run yet.
+
 ### Seeds (queued 2026-11-03)
 
 big6 and big7 with seeds 1 and 2 (`big6.cmd 1`, `big7.cmd 2`, ...; `train_nemo_stream.py --seed` changes batch order, masks and chunk choices; seed 0 reproduces the original runs). Measure: the spread of engine WER across seeds, and whether big7 against big6 holds for every seed.
