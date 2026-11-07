@@ -78,6 +78,7 @@ TORGO test, device engine, int8 + LM unless noted. Result files: `~/lmtest/<mode
 | 9 | simpre | from row 6: the waveform simulation as a first stage (simtr360 + LibriSpeech, 4000 steps), then row 6's recipe | 23.78 / 46.34 | 17.19 / 35.29 | E20 | no change (final CI −0.20..+0.56; dysarthric −1.04..+0.76); live slightly worse; UASpeech dysarthric better (F48) |
 | 10 | big11 | from row 6: + distillation from a fine-tuned Parakeet 110M (weight 0.5, T 2, full-context batches) | 24.26 / 46.78 | 17.84 / 35.98 | E21 | worse with the LM (final CI +0.38..+1.26); equal without it (−0.50..+0.41), so the loss is the LM step (F51); LibriSpeech 4.19 → 5.79 in float (F50) |
 | 11 | big12 | from row 10: the teacher term only on dysarthric clips | 23.45 / 46.73 | 17.96 / 37.52 | E22 | worse with the LM (final CI +0.43..+1.47; M05 +5.6); without it better than row 6 (−0.46, CI −1.00..+0.03; controls −0.58); float: UASpeech dysarthric 89.90 → 81.30, LibriSpeech 4.20 (F51). Needs an LM retune on a development set |
+| 12 | big13 | from row 6: + UASpeech B1/B3 of 20 speakers, 8 held out whole; 6500 steps | 23.95 / 47.17 | 17.26 / 35.89 | E24 | no change on TORGO final (CI −0.17..+0.62), live slightly worse (+0.18..+1.11); held-out UASpeech speakers 60.09 → 42.25 float, controls as much as dysarthric (F53); not deployed |
 
 Per speaker, final, row 6: F03 29.77, M05 46.14, FC03 7.74, MC04 9.14. Row 6 on other sets, float greedy: UASpeech 65.46 (shipped 72.8
 streaming), LibriSpeech 4.19 (shipped 4.01).
@@ -101,6 +102,7 @@ streaming), LibriSpeech 4.19 (shipped 4.01).
 | C12 | Bit-exact kernels do not guarantee identical transcripts across platforms: dynamic int8 quantization amplifies 1e-6 input differences to about 1 % in the logits. | E12 (F24) | solid |
 | C13 | A user's short phrase list, scored by CTC on the device, raises fully right utterances for dysarthric speakers from 50 % to 84 % (25 phrases) or 89 % (10), with 5 % of off-list speech wrongly matched. | E18 (F37) | tentative (threshold fitted on the test clips; TORGO prompts) |
 | C14 | Vocoder resynthesis is a hidden confound in simulated speech: WORLD with no change at all costs 11 points of WER on TORGO's recordings (0.4 on clean LibriSpeech) and is perfectly separable from the original; it supplied about half of what made the simulation sound dysarthric. Editing the recording in place (PSOLA + filtering) removes it. | E16 (F40, F42, F44) | solid |
+| C17 | Training on one corpus's other speakers helps that corpus's unseen speakers a lot (UASpeech held-out 60.1 → 42.3, all 8 better) but controls gain as much as dysarthric speakers and TORGO does not move: the gain is mostly the corpus, not dysarthria. | E24 (F53) | solid (8 speakers, one seed) |
 | C15 | Voice conversion (kNN-VC) keeps the dysarthria of real recordings (probe 96 %) but adds 7–10 points of its own. | E16 (F41) | solid (measurement); not used in training |
 
 **Negative results worth reporting:**
@@ -179,5 +181,5 @@ Finding:    one sentence for the paper (numbered).
 | Listening test of the simulator (club members rate real vs simulated, blind) | C8, C14 | planned |
 | Live tests on the board: club members, 15 and 60 cm, quiet and noisy, with known prompts | §6 last row; C10 and C11 on the real microphone | needs the board and volunteers |
 | Teacher-student training from a fine-tuned Parakeet (CC-BY-4.0; 110 M, since 1.1 B does not fit a 12 GB card for training) (E21) | more accuracy at 19 M | done 2026-11-06 (F50, F51): big11 and big12 lose to big7 only through the LM step; big12 is better without it |
-| LM weight and token bonus for distilled models (big12), tuned on a development set that is not TORGO test | F51: the LM's gain shrank from 1.6 to 0.2 points | to do: needs that development set first |
+| LM weight and token bonus for distilled models (big12), tuned on a development set that is not TORGO test | F51: the LM's gain shrank from 1.6 to 0.2 points; E13 also tuned on TORGO test | running (E25): dev set = folds B and C held-out speakers; fold big12 models train 2026-11-07 |
 | Cite: TORGO (Rudzicz et al. 2012), UASpeech (Kim et al. 2008), LibriSpeech, MUSAN, Conformer, CTC, SpecAugment, WORLD (Morise et al. 2016), MFA (McAuliffe et al. 2017) and the LibriSpeech alignments (Lugosch et al. 2019), kNN-VC (Baas et al. 2023), Parakeet (NVIDIA), the SAP Challenge (Interspeech 2025), Oído | | add to log §8 |

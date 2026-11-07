@@ -1622,7 +1622,40 @@ Change:     big7's recipe; steps 6000 → 6500 so TORGO and LibriSpeech are seen
 Recipe:     `train/runs/big13.cmd`. Checked: the five-manifest list loads on the PC (100 163 clips, 162 h).
 Measure:    big13 against big7, paired: TORGO test (engine + LM, float), LibriSpeech, the held-out UASpeech speakers (float). The full B2
             score is also computed, but it includes 20 speakers big13 trained on: not a result.
-Result:     not run yet.
+Result:     ran 2026-11-06 01:00–13:36 (6500 steps), float scores and export by 14:14. Engine scored on the laptop 18:31–19:45
+            (`~/lmtest/big13_q121_{full_lm,stream_lm,full_nolm}.json`). Float files `G:\cosgc\exp\eval\big13_*.json`,
+            `big7_uaspeech_test_b2_held.json`. Paired CI, `train/paired_ci.py`, big7 → big13.
+
+UASpeech B2, the 8 held-out speakers (2036 clips), float greedy:
+
+| | full | CI | chunk 64 | CI |
+|---|---|---|---|---|
+| all | 60.09 → 42.25 | −19.71..−15.65 | 65.45 → 49.07 | −18.35..−14.58 |
+| control | 34.14 → 14.98 | −21.95..−16.31 | 39.20 → 21.11 | −20.93..−15.37 |
+| dysarthric | 86.13 → 69.63 | −19.16..−13.74 | 91.80 → 77.15 | −17.27..−11.91 |
+
+Per speaker, full: F03 112.84 → 103.11, M07 100.00 → 84.05, F04 77.87 → 57.31, M09 53.70 → 33.85; CF03 45.53 → 23.35, CF05 36.96 →
+17.51, CM05 28.40 → 8.17, CM10 25.68 → 10.89. Every speaker improves, each CI below 0.
+
+TORGO test and LibriSpeech:
+
+| | big7 → big13 | CI |
+|---|---|---|
+| TORGO float, full | 18.46 → 18.78 | −0.10..+0.73 |
+| TORGO float, chunk 64 | 25.75 → 26.51 | +0.28..+1.20 |
+| TORGO engine + LM, final | 17.03 → 17.26 | −0.17..+0.62 (dysarthric 35.43 → 35.89, −0.52..+1.50) |
+| TORGO engine + LM, live c32 | 23.31 → 23.95 | +0.18..+1.11 (dysarthric 45.99 → 47.17, +0.07..+2.19; M05 +2.4) |
+| TORGO engine, final, no LM | 18.62 → 18.89 | −0.13..+0.67 |
+| LibriSpeech float, full / chunk 64 | 4.19 → 4.20 / 6.50 → 6.67 | −0.09..+0.11 / +0.03..+0.29 |
+
+Decision:   not deployed. On the device's corpus of record (TORGO) big13 is no better on final text and slightly worse live.
+            It is the model to use where UASpeech-like speech matters (isolated words), and evidence for the paper.
+
+**Finding 53:** UASpeech training data from other speakers cuts WER for UASpeech speakers never heard by 18 points (60.1 → 42.3,
+full context, float), every one of the 8 improving, dysarthric (−16.5) and control (−19.2) alike. Because controls gain as much,
+most of the gain is learning UASpeech itself (its microphones, rooms, isolated-word format and shared word list), not dysarthric
+speech in general: on TORGO the same model is unchanged on final text (+0.2, CI −0.2..+0.6) and slightly worse live (+0.6). E11's
+loss on TORGO (Finding 22) is mostly gone with whole speakers held out and steps scaled. Cross-corpus gains need cross-corpus tests.
 
 ### E25. LM weight and token bonus tuned on held-out training speakers (started 2026-11-06)
 
