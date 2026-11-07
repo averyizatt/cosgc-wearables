@@ -1685,6 +1685,11 @@ Rule:       fixed before any dev result.
                not worse by more than 0.3. Not before the club's E23 sessions are back: they run big7, and a model change
                part-way would split them.
 Result:     not run yet.
+- 2026-11-06 ~19:50: the big7-recipe grid started on the laptop and was stopped part-way at the user's request (laptop needed). No
+  result; its partial files are not used. It moves to the PC's CPU after the GPU work.
+- 2026-11-07 01:00: both fold teachers failed within minutes, CUDA out of memory in the first steps (other programs held GPU memory;
+  teacher110 itself needed 3.8 GB). Logs kept as `teacher110_fold{B,C}_oom1.log`. Requeued for 01:00 on 2026-11-08; the queue now
+  also waits for at least 9 GB of free GPU memory.
 
 ### Seeds (queued 2026-11-03)
 
