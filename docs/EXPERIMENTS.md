@@ -1692,6 +1692,9 @@ Result:     not run yet.
   also waits for at least 9 GB of free GPU memory.
 - 2026-11-07 10:25: started at once at the user's request instead (fold B teacher trained at 99 % GPU next to a game). Stopped at
   about 10:45 at the user's request (PC needed); `teacher110_foldB\ckpt.pt` was saved. Nothing is queued.
+- 2026-11-08 15:33: restart failed at import: Smart App Control now blocks `cuda\bindings\_internal\nvrtc.cp311-win_amd64.pyd`
+  (cuda-bindings 13.4.4, which loaded on 2026-11-05/06). NeMo imports it only for CUDA-graph decoding (optional), so cuda-bindings was
+  uninstalled from the NeMo environment; NeMo imports and sees the GPU. Restarted 15:41; the teacher resumed at step 4500.
 
 ### Seeds (queued 2026-11-03)
 
